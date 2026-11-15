@@ -15,6 +15,7 @@ import csv
 import io
 import os
 import uuid
+import socket
 from datetime import datetime, date
 from pathlib import Path
 from contextlib import contextmanager
@@ -27,11 +28,26 @@ from pydantic import BaseModel
 import httpx
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# APP SETUP
+# APP SETUP & LOCAL IP
 # ═══════════════════════════════════════════════════════════════════════════════
 app = FastAPI(title="SMS Campaign & CRM Dashboard")
 templates = Jinja2Templates(directory="templates")
 DB_PATH = "crm_sms.db"
+
+
+def get_local_ip() -> str:
+    """Detect local LAN IP address for Android gateway connectivity."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.2)
+        # Connecting to a public UDP address selects the active network interface
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DATABASE
@@ -52,7 +68,7 @@ def init_db():
         c.executescript("""
             CREATE TABLE IF NOT EXISTS config (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                gateway_mode TEXT DEFAULT 'local',
+                gateway_mode TEXT DEFAULT 'custom_android',
                 gateway_url TEXT DEFAULT 'http://192.168.1.105:8080',
                 api_key TEXT DEFAULT '',
                 device_id TEXT DEFAULT '',
@@ -102,6 +118,9 @@ def init_db():
         cols = [col[1] for col in c.fetchall()]
         if "device_id" not in cols:
             c.execute("ALTER TABLE config ADD COLUMN device_id TEXT DEFAULT ''")
+
+        # Set default to custom_android if local or empty
+        c.execute("UPDATE config SET gateway_mode = 'custom_android' WHERE id = 1 AND (gateway_mode = 'local' OR gateway_mode = '' OR gateway_mode IS NULL)")
         conn.commit()
 
 
@@ -112,7 +131,7 @@ init_db()
 # PYDANTIC MODELS
 # ═══════════════════════════════════════════════════════════════════════════════
 class ConfigModel(BaseModel):
-    gateway_mode: str = "local"
+    gateway_mode: str = "custom_android"
     gateway_url: str = "http://192.168.1.105:8080"
     api_key: str = ""
     device_id: str = ""
@@ -122,6 +141,13 @@ class ConfigModel(BaseModel):
     min_delay: int = 15
     max_delay: int = 35
     daily_limit: int = 500
+
+
+class MobileReportModel(BaseModel):
+    task_id: str
+    phone: str
+    status: str
+    error: Optional[str] = ""
 
 
 class PasteContactsModel(BaseModel):
@@ -235,12 +261,18 @@ class CampaignEngine:
         self.daily_limit = 500
         self.sent_today = 0
         self.today_date = date.today()
-        self.gateway_mode = "local"
+        self.gateway_mode = "custom_android"
         self.gateway_url = ""
         self.api_key = ""
         self.device_id = ""
         self.username = ""
         self.password = ""
+
+        # Pull mode queue state
+        self.current_task = None
+        self.last_report = None
+        self.task_reported_event = threading.Event()
+        self.test_task = None
 
     def _add_log(self, phone: str, status: str, msg: str = ""):
         entry = {
@@ -393,6 +425,10 @@ class CampaignEngine:
 
         self._stop_event.clear()
         self._pause_event.set()
+        self.task_reported_event.clear()
+        self.current_task = None
+        self.last_report = None
+        self.test_task = None
 
         # Save campaign to DB
         with get_db() as conn:
@@ -429,6 +465,10 @@ class CampaignEngine:
             return False, "Kampaniya ishlamayapti"
         self._stop_event.set()
         self._pause_event.set()
+        self.task_reported_event.set()
+        self.current_task = None
+        self.test_task = None
+        self.current_phone = ""
         self.status = "stopped"
         self._add_log("SYSTEM", "error", "Kampaniya bekor qilindi")
 
@@ -476,33 +516,79 @@ class CampaignEngine:
                     else:
                         msg = msg.replace("{ism}", "")
 
-                    # ── Current state (actively sending) ──
-                    with self.lock:
-                        self.current_phone = phone
-
-                    # ── Send SMS ──
                     sim = self._get_current_sim()
                     success = False
                     error = ""
-                    try:
-                        success, error = self._send_sms(phone, msg, sim)
-                    except Exception as send_err:
-                        success = False
-                        error = f"Kutilmagan xatolik: {str(send_err)[:150]}"
 
-                    # ── IMMEDIATELY update state and clear current_phone BEFORE sleep ──
-                    with self.lock:
-                        self.current_phone = ""
-                        if success:
-                            self.sent += 1
-                            self.sent_today += 1
-                            self._add_log(phone, "sent", f"✅ Yuborildi: {phone}")
-                        else:
-                            self.failed += 1
-                            self._add_log(phone, "failed", f"❌ Xatolik: {error}")
+                    if self.gateway_mode == "custom_android":
+                        # ── Pull Mode: Android app polls and executes task ──
+                        task_id = f"task_{self.campaign_id}_{i}_{uuid.uuid4().hex[:6]}"
+                        sim_int = int(sim) if str(sim).isdigit() else 1
+                        with self.lock:
+                            self.current_phone = phone
+                            self.current_task = {
+                                "has_task": True,
+                                "task_id": task_id,
+                                "phone": phone,
+                                "message": msg,
+                                "sim_slot": sim_int,
+                            }
+                            self.last_report = None
+                            self.task_reported_event.clear()
 
-                        self.pending = max(0, self.total - self.sent - self.failed)
-                        self.progress = round(((self.sent + self.failed) / self.total * 100), 1) if self.total > 0 else 0
+                        self._add_log(phone, "info", f"📱 Android ilova so'rovini kutmoqda ({phone})...")
+
+                        # Wait until Android app reports back or campaign is cancelled/paused
+                        while not self._stop_event.is_set():
+                            if self.task_reported_event.wait(timeout=0.5):
+                                break
+                            if not self._pause_event.is_set():
+                                self._pause_event.wait()
+
+                        if self._stop_event.is_set():
+                            break
+
+                        report = self.last_report or {}
+                        success = (report.get("status") == "sent")
+                        error = report.get("error", "")
+
+                        with self.lock:
+                            self.current_phone = ""
+                            self.current_task = None
+                            if success:
+                                self.sent += 1
+                                self.sent_today += 1
+                                self._add_log(phone, "sent", f"✅ Yuborildi (Shaxsiy Ilova): {phone}")
+                            else:
+                                self.failed += 1
+                                self._add_log(phone, "failed", f"❌ Xatolik (Shaxsiy Ilova): {error or 'Yuborilmadi'}")
+
+                            self.pending = max(0, self.total - self.sent - self.failed)
+                            self.progress = round(((self.sent + self.failed) / self.total * 100), 1) if self.total > 0 else 0
+                    else:
+                        # ── Push Mode: Direct send via TextBee or Local Android Gateway ──
+                        with self.lock:
+                            self.current_phone = phone
+
+                        try:
+                            success, error = self._send_sms(phone, msg, sim)
+                        except Exception as send_err:
+                            success = False
+                            error = f"Kutilmagan xatolik: {str(send_err)[:150]}"
+
+                        # ── IMMEDIATELY update state and clear current_phone BEFORE sleep ──
+                        with self.lock:
+                            self.current_phone = ""
+                            if success:
+                                self.sent += 1
+                                self.sent_today += 1
+                                self._add_log(phone, "sent", f"✅ Yuborildi: {phone}")
+                            else:
+                                self.failed += 1
+                                self._add_log(phone, "failed", f"❌ Xatolik: {error}")
+
+                            self.pending = max(0, self.total - self.sent - self.failed)
+                            self.progress = round(((self.sent + self.failed) / self.total * 100), 1) if self.total > 0 else 0
 
                     # ── Save state to SQLite immediately ──
                     try:
@@ -597,7 +683,8 @@ engine = CampaignEngine()
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    local_ip = get_local_ip()
+    return templates.TemplateResponse("index.html", {"request": request, "server_ip": local_ip})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -607,7 +694,9 @@ async def index(request: Request):
 async def get_config():
     with get_db() as conn:
         row = conn.execute("SELECT * FROM config WHERE id = 1").fetchone()
-        return dict(row)
+        data = dict(row)
+        data["server_ip"] = get_local_ip()
+        return data
 
 
 @app.post("/api/config")
@@ -776,6 +865,19 @@ async def test_sms(data: TestSmsModel):
     if data.gateway_url:
         engine.gateway_url = data.gateway_url
 
+    if engine.gateway_mode == "custom_android":
+        sim_val = engine.sim_slot
+        sim_int = int(sim_val) if str(sim_val).isdigit() else 1
+        engine.test_task = {
+            "has_task": True,
+            "task_id": f"test_{uuid.uuid4().hex[:6]}",
+            "phone": phone,
+            "message": data.message,
+            "sim_slot": sim_int,
+        }
+        engine._add_log(phone, "info", f"📱 Test SMS navbatga qo'yildi. Android ilovangiz yuboradi: {phone}")
+        return {"ok": True, "message": f"Test SMS navbatga qo'yildi. Android ilovangiz orqali yuboriladi ✅"}
+
     sim = engine._get_current_sim()
     success, error = engine._send_sms(phone, data.message, sim)
 
@@ -785,6 +887,63 @@ async def test_sms(data: TestSmsModel):
     else:
         engine._add_log(phone, "failed", f"Test SMS xatosi: {error}")
         return {"ok": False, "message": f"Xatolik: {error}"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROUTES — MOBILE ANDROID GATEWAY (PULL QUEUE)
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/mobile/ping")
+def mobile_ping():
+    return {
+        "status": "ok",
+        "server_ip": get_local_ip(),
+        "campaign_active": engine.status == "running",
+        "gateway_mode": engine.gateway_mode,
+    }
+
+
+@app.get("/api/mobile/poll")
+def mobile_poll():
+    # 1. Check if there's a test task waiting
+    if engine.test_task:
+        task = dict(engine.test_task)
+        return task
+
+    # 2. Check if a campaign is active
+    if engine.status != "running":
+        return {"has_task": False, "wait_seconds": 3, "message": "Kampaniya faol emas"}
+
+    # 3. If in anti-spam countdown delay
+    if engine.next_send_countdown > 0:
+        return {"has_task": False, "wait_seconds": engine.next_send_countdown, "message": "Anti-spam tanaffus"}
+
+    # 4. If current task is ready for pulling
+    if engine.current_task:
+        return engine.current_task
+
+    return {"has_task": False, "wait_seconds": 2}
+
+
+@app.post("/api/mobile/report")
+def mobile_report(rep: MobileReportModel):
+    # If this was a test task
+    if rep.task_id.startswith("test_"):
+        if rep.status == "sent":
+            engine._add_log(rep.phone, "sent", f"✅ Test SMS yuborildi (Shaxsiy Ilova): {rep.phone}")
+        else:
+            engine._add_log(rep.phone, "failed", f"❌ Test SMS xatosi: {rep.error or 'Yuborilmadi'}")
+        engine.test_task = None
+        return {"ok": True, "message": "Test hisoboti qabul qilindi"}
+
+    # Campaign task
+    engine.last_report = {
+        "task_id": rep.task_id,
+        "phone": rep.phone,
+        "status": rep.status,
+        "error": rep.error or "",
+    }
+    engine.task_reported_event.set()
+    return {"ok": True, "message": "Hisobot qabul qilindi"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -873,5 +1032,13 @@ async def campaign_logs(campaign_id: str):
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    local_ip = get_local_ip()
+    print("=" * 65)
+    print(" 🚀 SMS Campaign & CRM Dashboard ishga tushirilmoqda...")
+    print(f" 👉 Kompyuter brauzerida:      http://localhost:8000")
+    print(f" 👉 Yoki:                     http://127.0.0.1:8000")
+    print(f" 📱 Android ilova / Telefon:   http://{local_ip}:8000")
+    print(" ⚠️  DIQQAT: Brauzerga '0.0.0.0:8000' deb yozmang (xatolik beradi)!")
+    print("=" * 65)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
 
