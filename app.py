@@ -305,16 +305,20 @@ class CampaignEngine:
         with get_db() as conn:
             row = conn.execute("SELECT * FROM config WHERE id = 1").fetchone()
             if row:
-                self.gateway_mode = row["gateway_mode"]
-                self.gateway_url = row["gateway_url"]
-                self.api_key = row["api_key"]
-                self.device_id = row["device_id"]
-                self.username = row["username"]
-                self.password = row["password"]
-                self.sim_slot = row["sim_slot"]
-                self.min_delay = row["min_delay"]
-                self.max_delay = row["max_delay"]
-                self.daily_limit = row["daily_limit"]
+                self.gateway_mode = row["gateway_mode"] or "custom_android"
+                self.gateway_url = row["gateway_url"] or ""
+                self.api_key = row["api_key"] or ""
+                self.device_id = row["device_id"] or ""
+                self.username = row["username"] or ""
+                self.password = row["password"] or ""
+                self.sim_slot = row["sim_slot"] or "1"
+                self.min_delay = row["min_delay"] or 15
+                self.max_delay = row["max_delay"] or 35
+                self.daily_limit = row["daily_limit"] or 500
+
+                # Auto fallback to custom_android if local mode has no URL or if mode is empty/local
+                if self.gateway_mode == "local" and not (self.gateway_url or "").strip():
+                    self.gateway_mode = "custom_android"
 
     def _get_current_sim(self) -> str:
         if self.sim_slot == "auto":
