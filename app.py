@@ -536,7 +536,7 @@ class CampaignEngine:
                             self.last_report = None
                             self.task_reported_event.clear()
 
-                        self._add_log(phone, "info", f"📱 Android ilova so'rovini kutmoqda ({phone})...")
+                        self._add_log(phone, "info", f"📱 'SMS Bridge Pro' ilovasi so'rovini kutmoqda ({phone})...")
 
                         # Wait until Android app reports back or campaign is cancelled/paused
                         while not self._stop_event.is_set():
@@ -558,10 +558,10 @@ class CampaignEngine:
                             if success:
                                 self.sent += 1
                                 self.sent_today += 1
-                                self._add_log(phone, "sent", f"✅ Yuborildi (Shaxsiy Ilova): {phone}")
+                                self._add_log(phone, "sent", f"✅ Yuborildi (SMS Bridge Pro): {phone}")
                             else:
                                 self.failed += 1
-                                self._add_log(phone, "failed", f"❌ Xatolik (Shaxsiy Ilova): {error or 'Yuborilmadi'}")
+                                self._add_log(phone, "failed", f"❌ Xatolik (SMS Bridge Pro): {error or 'Yuborilmadi'}")
 
                             self.pending = max(0, self.total - self.sent - self.failed)
                             self.progress = round(((self.sent + self.failed) / self.total * 100), 1) if self.total > 0 else 0
@@ -875,8 +875,8 @@ async def test_sms(data: TestSmsModel):
             "message": data.message,
             "sim_slot": sim_int,
         }
-        engine._add_log(phone, "info", f"📱 Test SMS navbatga qo'yildi. Android ilovangiz yuboradi: {phone}")
-        return {"ok": True, "message": f"Test SMS navbatga qo'yildi. Android ilovangiz orqali yuboriladi ✅"}
+        engine._add_log(phone, "info", f"📱 Test SMS navbatga qo'yildi. 'SMS Bridge Pro' ilovangiz yuboradi: {phone}")
+        return {"ok": True, "message": f"Test SMS navbatga qo'yildi. 'SMS Bridge Pro' ilovangiz orqali yuboriladi ✅"}
 
     sim = engine._get_current_sim()
     success, error = engine._send_sms(phone, data.message, sim)
@@ -929,7 +929,7 @@ def mobile_report(rep: MobileReportModel):
     # If this was a test task
     if rep.task_id.startswith("test_"):
         if rep.status == "sent":
-            engine._add_log(rep.phone, "sent", f"✅ Test SMS yuborildi (Shaxsiy Ilova): {rep.phone}")
+            engine._add_log(rep.phone, "sent", f"✅ Test SMS yuborildi (SMS Bridge Pro): {rep.phone}")
         else:
             engine._add_log(rep.phone, "failed", f"❌ Test SMS xatosi: {rep.error or 'Yuborilmadi'}")
         engine.test_task = None
