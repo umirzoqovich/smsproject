@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="uz" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SMS Campaign & CRM Dashboard</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <!-- TailwindCSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: { 900: '#090d16', 800: '#111827', 700: '#1f2937', 600: '#374151' },
+                        emerald: { 400: '#34d399', 500: '#10b981', 600: '#059669', 700: '#047857' }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@0.344.0/dist/umd/lucide.min.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #090d16; color: #e5e7eb; font-family: 'Inter', system-ui, sans-serif; }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #111827; }
+        ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+        /* Glassmorphism card */
+        .glass-card {
+            background: rgba(17, 24, 39, 0.7);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(31, 41, 55, 0.8);
+            border-radius: 16px;
+            transition: all 0.3s ease;
+        }
+        .glass-card:hover {
+            border-color: rgba(16, 185, 129, 0.3);
+            box-shadow: 0 0 20px rgba(16, 185, 129, 0.05);
+        }
+
+        /* Glow effects */
+        .glow-green {
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.4), 0 0 40px rgba(16, 185, 129, 0.1);
+        }
+        .glow-text {
+            text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+        }
+        .glow-border {
+            border-color: #10b981;
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+        }
+
+        /* Progress bar animation */
+        .progress-bar {
+            background: linear-gradient(90deg, #059669, #10b981, #34d399, #10b981, #059669);
+            background-size: 200% 100%;
+            animation: shimmer 2s ease-in-out infinite;
+            transition: width 0.8s ease;
+        }
+        @keyframes shimmer {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        /* Pulse dot */
+        .pulse-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #10b981;
+            animation: pulse-glow 2s ease-in-out infinite;
+        }
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 4px #10b981; }
+            50% { box-shadow: 0 0 12px #10b981, 0 0 24px rgba(16,185,129,0.3); }
+        }
+
+        /* Terminal log */
+        .terminal {
+            background: #0a0e17;
+            border: 1px solid #1f2937;
+            border-radius: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.7;
+            overflow-y: auto;
+            max-height: 420px;
+        }
+        .terminal-line { padding: 2px 0; }
+        .terminal-line.sent { color: #34d399; }
+        .terminal-line.failed { color: #f87171; }
+        .terminal-line.info { color: #60a5fa; }
+        .terminal-line.warning { color: #fbbf24; }
+
+        /* Modal */
+        .modal-backdrop {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+        }
+
+        /* Button glow */
+        .btn-glow {
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+        .btn-glow::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            box-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
+        }
+        .btn-glow:hover::after { opacity: 1; }
+
+        /* KPI Card number animation */
+        .kpi-number {
+            font-variant-numeric: tabular-nums;
+            transition: all 0.5s ease;
+        }
+
+        /* Fade in animation */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in-up { animation: fadeInUp 0.5s ease forwards; }
+
+        /* Countdown ring */
+        .countdown-ring {
+            background: conic-gradient(#10b981 calc(var(--progress) * 1%), #1f2937 0%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Input styling */
+        input[type="text"], input[type="number"], input[type="password"], input[type="url"], textarea, select {
+            background: #0d1117;
+            border: 1px solid #1f2937;
+            color: #e5e7eb;
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #10b981;
+            box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+        }
+        select option { background: #111827; color: #e5e7eb; }
+
+        /* Range slider */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #1f2937;
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #10b981;
+            cursor: pointer;
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+        }
+
+        /* Toast notification */
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            padding: 14px 20px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 500;
+            backdrop-filter: blur(12px);
+            animation: slideIn 0.4s ease, fadeOut 0.4s ease 3s forwards;
+            max-width: 400px;
+        }
+        .toast.success { background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; }
+        .toast.error { background: rgba(248, 113, 113, 0.15); border: 1px solid #f87171; color: #f87171; }
+        .toast.warning { background: rgba(251, 191, 36, 0.15); border: 1px solid #fbbf24; color: #fbbf24; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes fadeOut { to { opacity: 0; transform: translateY(-10px); } }
+    </style>
+</head>
+<body class="min-h-screen">
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- TOP STATUS BAR                                                 -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<header class="sticky top-0 z-50 border-b border-dark-700" style="background: rgba(9,13,22,0.85); backdrop-filter: blur(12px);">
+    <div class="max-w-[1440px] mx-auto px-6 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
+                <i data-lucide="message-square" class="w-5 h-5 text-emerald-400"></i>
+            </div>
+            <div>
+                <h1 class="text-lg font-bold text-white tracking-tight">SMS Campaign</h1>
+                <p class="text-[11px] text-gray-500 -mt-0.5">CRM Dashboard v2.0</p>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-4">
+            <!-- Status indicator -->
+            <div id="statusBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-700/50 border border-dark-600/50 text-xs font-medium">
+                <span class="pulse-dot" id="statusDot"></span>
+                <span id="statusText" class="text-gray-400">Kutilmoqda</span>
+            </div>
+
+            <!-- Gateway settings button -->
+            <button onclick="openSettingsModal()" class="flex items-center gap-2 px-4 py-2 rounded-xl bg-dark-700/50 border border-dark-600/50 hover:border-emerald-500/30 text-sm text-gray-300 hover:text-emerald-400 transition-all">
+                <i data-lucide="settings" class="w-4 h-4"></i>
+                Sozlamalar
+            </button>
+
+            <!-- Export dropdown -->
+            <div class="relative" id="exportDropdown">
+                <button onclick="toggleExportMenu()" class="flex items-center gap-2 px-4 py-2 rounded-xl bg-dark-700/50 border border-dark-600/50 hover:border-emerald-500/30 text-sm text-gray-300 hover:text-emerald-400 transition-all">
+                    <i data-lucide="download" class="w-4 h-4"></i>
+                    Eksport
+                </button>
+                <div id="exportMenu" class="hidden absolute right-0 mt-2 w-48 rounded-xl bg-dark-800 border border-dark-700 shadow-xl py-1 z-50">
+                    <a href="/api/export/all" class="block px-4 py-2.5 text-sm text-gray-300 hover:text-emerald-400 hover:bg-dark-700/50 transition-colors">📋 Barchasi (CSV)</a>
+                    <a href="/api/export/sent" class="block px-4 py-2.5 text-sm text-gray-300 hover:text-emerald-400 hover:bg-dark-700/50 transition-colors">✅ Yuborilganlar</a>
+                    <a href="/api/export/failed" class="block px-4 py-2.5 text-sm text-gray-300 hover:text-emerald-400 hover:bg-dark-700/50 transition-colors">❌ Xatoliklar</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- MAIN CONTENT                                                   -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<main class="max-w-[1440px] mx-auto px-6 py-6 space-y-6">
+
+    <!-- KPI METRIC CARDS -->
+    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- Jami raqamlar -->
+        <div class="glass-card p-5">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Jami raqamlar</span>
+                <div class="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                    <i data-lucide="users" class="w-4 h-4 text-blue-400"></i>
+                </div>
+            </div>
+            <p class="kpi-number text-3xl font-bold text-white" id="kpiTotal">0</p>
+            <p class="text-xs text-gray-500 mt-1">Yuklangan kontaktlar</p>
+        </div>
+        <!-- Yuborildi -->
+        <div class="glass-card p-5">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Yuborildi</span>
+                <div class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+                    <i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-400"></i>
+                </div>
+            </div>
+            <p class="kpi-number text-3xl font-bold text-emerald-400 glow-text" id="kpiSent">0</p>
+            <p class="text-xs text-gray-500 mt-1">Muvaffaqiyatli</p>
+        </div>
+        <!-- Navbatda -->
+        <div class="glass-card p-5">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Navbatda</span>
+                <div class="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
+                    <i data-lucide="clock" class="w-4 h-4 text-amber-400"></i>
+                </div>
+            </div>
+            <p class="kpi-number text-3xl font-bold text-amber-400" id="kpiPending">0</p>
+            <p class="text-xs text-gray-500 mt-1">Kutilmoqda</p>
+        </div>
+        <!-- Xatolik -->
+        <div class="glass-card p-5">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Xatolik</span>
+                <div class="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center">
+                    <i data-lucide="alert-circle" class="w-4 h-4 text-red-400"></i>
+                </div>
+            </div>
+            <p class="kpi-number text-3xl font-bold text-red-400" id="kpiFailed">0</p>
+            <p class="text-xs text-gray-500 mt-1">Yuborilmadi</p>
+        </div>
+    </section>
+
+    <!-- DUAL-COLUMN MAIN WORKSPACE -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        <!-- ═════════ LEFT COLUMN: CAMPAIGN SETUP ═════════ -->
+        <div class="lg:col-span-5 space-y-5">
+
+            <!-- Contact Management -->
+            <div class="glass-card p-6">
+                <div class="flex items-center gap-2 mb-4">
+                    <i data-lucide="contact" class="w-5 h-5 text-emerald-400"></i>
+                    <h2 class="text-base font-semibold text-white">Raqamlar bazasi</h2>
+                    <span id="contactBadge" class="ml-auto px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-semibold hidden">0</span>
+                </div>
+
+                <!-- File upload -->
+                <div id="dropZone" class="border-2 border-dashed border-dark-600 rounded-xl p-6 text-center cursor-pointer hover:border-emerald-500/40 transition-all mb-4"
+                     onclick="document.getElementById('fileInput').click()"
+                     ondragover="event.preventDefault(); this.classList.add('border-emerald-500/60')"
+                     ondragleave="this.classList.remove('border-emerald-500/60')"
+                     ondrop="handleFileDrop(event)">
+                    <i data-lucide="upload-cloud" class="w-8 h-8 text-gray-500 mx-auto mb-2"></i>
+                    <p class="text-sm text-gray-400">Faylni bu yerga tashlang yoki bosing</p>
+                    <p class="text-xs text-gray-600 mt-1">.txt yoki .csv (telefon yoki telefon,ism)</p>
+                    <input type="file" id="fileInput" accept=".txt,.csv" class="hidden" onchange="handleFileSelect(event)">
+                </div>
+
+                <!-- Paste area -->
+                <div class="mb-3">
+                    <label class="block text-xs font-medium text-gray-500 mb-1.5">Yoki raqamlarni qo'lda kiriting:</label>
+                    <textarea id="pasteArea" rows="4" placeholder="+998901234567&#10;998911234567,Ali&#10;901234567"
+                        class="font-mono text-sm resize-none"></textarea>
+                </div>
+                <button onclick="loadPastedContacts()" class="w-full py-2.5 rounded-xl bg-dark-700 border border-dark-600 text-sm font-medium text-gray-300 hover:text-emerald-400 hover:border-emerald-500/30 transition-all flex items-center justify-center gap-2">
+                    <i data-lucide="list-plus" class="w-4 h-4"></i>
+                    Raqamlarni yuklash
+                </button>
+            </div>
+
+            <!-- Message Composer -->
+            <div class="glass-card p-6">
+                <div class="flex items-center gap-2 mb-4">
+                    <i data-lucide="pen-line" class="w-5 h-5 text-emerald-400"></i>
+                    <h2 class="text-base font-semibold text-white">Xabar matni</h2>
+                </div>
+
+                <textarea id="messageText" rows="5"
+                    placeholder="Assalomu alaykum, {ism}! Sizga maxsus taklifimiz bor..."
+                    oninput="updateCharCounter()"
+                    class="text-sm resize-none mb-2"></textarea>
+
+                <div class="flex items-center justify-between text-xs text-gray-500">
+                    <div class="flex items-center gap-3">
+                        <span><span id="charCount">0</span> / <span id="charLimit">160</span> belgi</span>
+                        <span class="text-dark-600">|</span>
+                        <span><span id="smsSegments">0</span> SMS segment</span>
+                    </div>
+                    <button onclick="insertVariable()" class="text-emerald-500 hover:text-emerald-400 font-medium transition-colors">
+                        + {ism}
+                    </button>
+                </div>
+                <p class="text-[11px] text-gray-600 mt-2">💡 <code class="text-emerald-500/70">{ism}</code> — kontakt ismi bilan almashtiriladi</p>
+            </div>
+
+            <!-- Anti-Spam & Delay Settings -->
+            <div class="glass-card p-6">
+                <div class="flex items-center gap-2 mb-4">
+                    <i data-lucide="shield-check" class="w-5 h-5 text-emerald-400"></i>
+                    <h2 class="text-base font-semibold text-white">Anti-spam sozlamalari</h2>
+                </div>
+
+                <div class="space-y-4">
+                    <!-- Min delay -->
+                    <div>
+                        <div class="flex items-center justify-between mb-1.5">
+                            <label class="text-xs font-medium text-gray-400">Minimal kechikish</label>
+                            <span class="text-sm font-semibold text-emerald-400" id="minDelayVal">15</span><span class="text-xs text-gray-500"> son</span>
+                        </div>
+                        <input type="range" id="minDelay" min="5" max="120" value="15" oninput="updateDelayLabels()">
+                    </div>
+                    <!-- Max delay -->
+                    <div>
+                        <div class="flex items-center justify-between mb-1.5">
+                            <label class="text-xs font-medium text-gray-400">Maksimal kechikish</label>
+                            <span class="text-sm font-semibold text-emerald-400" id="maxDelayVal">35</span><span class="text-xs text-gray-500"> son</span>
+                        </div>
+                        <input type="range" id="maxDelay" min="10" max="300" value="35" oninput="updateDelayLabels()">
+                    </div>
+                    <!-- Daily limit -->
+                    <div>
+                        <div class="flex items-center justify-between mb-1.5">
+                            <label class="text-xs font-medium text-gray-400">Kunlik limit</label>
+                        </div>
+                        <input type="number" id="dailyLimit" min="0" max="10000" value="500" placeholder="0 = limitsiz" class="text-sm">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Campaign Controls -->
+            <div class="glass-card p-6">
+                <div class="flex items-center gap-2 mb-4">
+                    <i data-lucide="rocket" class="w-5 h-5 text-emerald-400"></i>
+                    <h2 class="text-base font-semibold text-white">Kampaniya boshqaruvi</h2>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <button id="btnStart" onclick="startCampaign()"
+                        class="btn-glow col-span-2 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm transition-all flex items-center justify-center gap-2">
+                        <i data-lucide="play" class="w-4 h-4"></i>
+                        Boshlash
+                    </button>
+                    <button id="btnPause" onclick="pauseCampaign()" disabled
+                        class="py-2.5 rounded-xl bg-amber-600/20 border border-amber-600/30 text-amber-400 font-medium text-sm hover:bg-amber-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed">
+                        <i data-lucide="pause" class="w-4 h-4"></i>
+                        To'xtatish
+                    </button>
+                    <button id="btnResume" onclick="resumeCampaign()" disabled
+                        class="py-2.5 rounded-xl bg-blue-600/20 border border-blue-600/30 text-blue-400 font-medium text-sm hover:bg-blue-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed">
+                        <i data-lucide="play-circle" class="w-4 h-4"></i>
+                        Davom
+                    </button>
+                    <button id="btnStop" onclick="stopCampaign()" disabled
+                        class="col-span-2 py-2.5 rounded-xl bg-red-600/20 border border-red-600/30 text-red-400 font-medium text-sm hover:bg-red-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed">
+                        <i data-lucide="square" class="w-4 h-4"></i>
+                        Bekor qilish
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═════════ RIGHT COLUMN: LIVE PROGRESS & TERMINAL ═════════ -->
+        <div class="lg:col-span-7 space-y-5">
+
+            <!-- Progress Section -->
+            <div class="glass-card p-6">
+                <div class="flex items-center justify-between mb-5">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="activity" class="w-5 h-5 text-emerald-400"></i>
+                        <h2 class="text-base font-semibold text-white">Jarayon holati</h2>
+                    </div>
+                    <div id="countdownContainer" class="flex items-center gap-2 opacity-0 transition-opacity">
+                        <div class="countdown-ring w-10 h-10" style="--progress: 0">
+                            <div class="w-8 h-8 rounded-full bg-dark-800 flex items-center justify-center">
+                                <span id="countdownNum" class="text-xs font-bold text-emerald-400 font-mono">0</span>
+                            </div>
+                        </div>
+                        <div>
+                            <p class="text-[11px] text-gray-500">Keyingi SMS</p>
+                            <p class="text-xs text-gray-400 font-medium" id="countdownLabel">— soniya</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Progress bar -->
+                <div class="relative mb-3">
+                    <div class="w-full h-3 bg-dark-700 rounded-full overflow-hidden">
+                        <div id="progressBar" class="progress-bar h-full rounded-full" style="width: 0%"></div>
+                    </div>
+                    <div class="flex items-center justify-between mt-2">
+                        <span class="text-xs text-gray-500">Bajarildi</span>
+                        <span class="text-sm font-bold text-emerald-400 font-mono" id="progressPercent">0%</span>
+                    </div>
+                </div>
+
+                <!-- Current phone -->
+                <div id="currentPhoneRow" class="flex items-center gap-3 p-3 rounded-xl bg-dark-900/50 border border-dark-700/50 opacity-0 transition-opacity">
+                    <div class="pulse-dot"></div>
+                    <span class="text-xs text-gray-500">Hozir yuborilmoqda:</span>
+                    <span id="currentPhone" class="text-sm font-mono text-emerald-400 font-medium">—</span>
+                </div>
+            </div>
+
+            <!-- Live Terminal Log -->
+            <div class="glass-card p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="terminal" class="w-5 h-5 text-emerald-400"></i>
+                        <h2 class="text-base font-semibold text-white">Real-time terminal</h2>
+                    </div>
+                    <button onclick="clearTerminal()" class="text-xs text-gray-600 hover:text-gray-400 transition-colors flex items-center gap-1">
+                        <i data-lucide="trash-2" class="w-3 h-3"></i>
+                        Tozalash
+                    </button>
+                </div>
+
+                <!-- Terminal window -->
+                <div class="terminal p-4" id="terminal">
+                    <div class="terminal-line info">
+                        <span class="text-gray-600">[{{ "--" }}:{{ "--" }}:{{ "--" }}]</span>
+                        <span class="text-emerald-500/50"> ▸ </span>
+                        <span class="text-gray-500">Terminal tayyor. Kampaniyani boshlang...</span>
+                    </div>
+                </div>
+
+                <!-- Terminal stats bar -->
+                <div class="flex items-center justify-between mt-3 text-[11px] text-gray-600">
+                    <span>Oxirgi yangilanish: <span id="lastUpdateTime" class="text-gray-500">—</span></span>
+                    <span>Log satrlari: <span id="logLineCount" class="text-gray-500">0</span></span>
+                </div>
+            </div>
+
+            <!-- Campaign History (collapsible) -->
+            <div class="glass-card p-6">
+                <button onclick="toggleHistory()" class="flex items-center justify-between w-full text-left">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="history" class="w-5 h-5 text-emerald-400"></i>
+                        <h2 class="text-base font-semibold text-white">Kampaniya tarixi</h2>
+                    </div>
+                    <i data-lucide="chevron-down" class="w-4 h-4 text-gray-500 transition-transform" id="historyChevron"></i>
+                </button>
+                <div id="historyContent" class="hidden mt-4">
+                    <div id="historyList" class="space-y-2 max-h-60 overflow-y-auto">
+                        <p class="text-sm text-gray-600 text-center py-4">Hali kampaniya yo'q</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</main>
+
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- SETTINGS MODAL                                                 -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="settingsModal" class="fixed inset-0 z-[100] hidden">
+    <div class="modal-backdrop absolute inset-0" onclick="closeSettingsModal()"></div>
+    <div class="absolute right-0 top-0 h-full w-full max-w-lg glass-card rounded-l-2xl border-l border-dark-700 overflow-y-auto" style="background: rgba(9,13,22,0.97);">
+        <div class="p-6 space-y-6">
+            <!-- Header -->
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <i data-lucide="settings-2" class="w-5 h-5 text-emerald-400"></i>
+                    <h2 class="text-lg font-bold text-white">Gateway sozlamalari</h2>
+                </div>
+                <button onclick="closeSettingsModal()" class="w-8 h-8 rounded-lg hover:bg-dark-700 flex items-center justify-center transition-colors">
+                    <i data-lucide="x" class="w-4 h-4 text-gray-400"></i>
+                </button>
+            </div>
+
+            <!-- Gateway Mode -->
+            <div>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5">Gateway rejimi</label>
+                <select id="cfgGatewayMode" onchange="toggleGatewayFields()">
+                    <option value="local">📱 Local Android Gateway (IP:Port)</option>
+                    <option value="textbee">☁️ TextBee Cloud API</option>
+                </select>
+            </div>
+
+            <!-- Gateway URL (local mode only) -->
+            <div id="gatewayUrlGroup">
+                <label class="block text-xs font-medium text-gray-400 mb-1.5">Gateway URL / IP manzil</label>
+                <input type="url" id="cfgGatewayUrl" placeholder="http://192.168.1.105:8080">
+            </div>
+
+            <!-- TextBee Device ID (textbee mode only) -->
+            <div id="deviceIdGroup" class="hidden">
+                <label class="block text-xs font-medium text-gray-400 mb-1.5">TextBee Device ID</label>
+                <input type="text" id="cfgDeviceId" placeholder="6XXXXXXXXXXXXXXXXXXXXXXX">
+                <p class="text-[11px] text-gray-600 mt-1">📱 TextBee ilovasidagi Device ID (qurilma identifikatori)</p>
+            </div>
+
+            <!-- API Key -->
+            <div id="apiKeyGroup">
+                <label class="block text-xs font-medium text-gray-400 mb-1.5" id="apiKeyLabel">API kalit</label>
+                <input type="password" id="cfgApiKey" placeholder="API kalitingizni kiriting">
+                <p id="apiKeyHint" class="text-[11px] text-gray-600 mt-1 hidden">🔑 TextBee Dashboard → API Keys dan olinadi</p>
+            </div>
+
+            <!-- Username / Password (local mode only) -->
+            <div id="authGroup" class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">Foydalanuvchi</label>
+                    <input type="text" id="cfgUsername" placeholder="admin">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">Parol</label>
+                    <input type="password" id="cfgPassword" placeholder="••••••">
+                </div>
+            </div>
+
+            <!-- SIM slot -->
+            <div>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5">SIM slot</label>
+                <select id="cfgSimSlot">
+                    <option value="1">SIM 1</option>
+                    <option value="2">SIM 2</option>
+                    <option value="auto">🔄 Auto-rotate (SIM 1 & SIM 2)</option>
+                </select>
+            </div>
+
+            <hr class="border-dark-700">
+
+            <!-- Test SMS -->
+            <div>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5">Test SMS yuborish</label>
+                <div class="flex gap-2">
+                    <input type="text" id="testPhone" placeholder="+998901234567" class="flex-1">
+                    <button onclick="sendTestSms()" class="px-4 py-2 rounded-xl bg-emerald-600/20 border border-emerald-600/30 text-emerald-400 text-sm font-medium hover:bg-emerald-600/30 transition-all flex items-center gap-1.5 whitespace-nowrap">
+                        <i data-lucide="send" class="w-3.5 h-3.5"></i>
+                        Test
+                    </button>
+                </div>
+                <p id="testResult" class="text-xs mt-2 hidden"></p>
+            </div>
+
+            <hr class="border-dark-700">
+
+            <!-- Save button -->
+            <div class="flex gap-3">
+                <button onclick="saveSettings()" class="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm transition-all flex items-center justify-center gap-2">
+                    <i data-lucide="save" class="w-4 h-4"></i>
+                    Saqlash
+                </button>
+                <button onclick="closeSettingsModal()" class="px-6 py-3 rounded-xl bg-dark-700 border border-dark-600 text-gray-400 text-sm font-medium hover:text-white transition-all">
+                    Bekor
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- JAVASCRIPT                                                     -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<script>
+// ─── State ───
+let sessionId = localStorage.getItem('smsSessionId') || generateId();
+localStorage.setItem('smsSessionId', sessionId);
+let sseSource = null;
+let campaignActive = false;
+let lastLogCount = 0;
+
+function generateId() {
+    return Math.random().toString(36).substr(2, 12);
+}
+
+// ─── Initialize ───
+document.addEventListener('DOMContentLoaded', () => {
+    lucide.createIcons();
+    loadConfig();
+    connectSSE();
+    loadHistory();
+    // Active polling every 2 seconds ensures instant KPI & progress updates
+    setInterval(pollStatus, 2000);
+});
+
+// ═══════════════════════════════════════════════════════════════
+// SSE & Active Polling — Real-time Updates
+// ═══════════════════════════════════════════════════════════════
+async function pollStatus() {
+    try {
+        const resp = await fetch('/api/campaign/status');
+        if (resp.ok) {
+            const data = await resp.json();
+            updateDashboard(data);
+        }
+    } catch (e) {
+        // network silent
+    }
+}
+
+function connectSSE() {
+    if (sseSource) {
+        try { sseSource.close(); } catch(e) {}
+        sseSource = null;
+    }
+
+    try {
+        sseSource = new EventSource('/api/stream');
+
+        sseSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                updateDashboard(data);
+            } catch (e) {
+                console.error('SSE parse error:', e);
+            }
+        };
+
+        sseSource.onerror = () => {
+            // Native EventSource reconnects automatically.
+            // Only recreate if readyState is CLOSED to prevent connection exhaustion.
+            if (sseSource && sseSource.readyState === EventSource.CLOSED) {
+                try { sseSource.close(); } catch(e) {}
+                sseSource = null;
+                setTimeout(connectSSE, 5000);
+            }
+        };
+    } catch (e) {
+        console.error('SSE init error:', e);
+    }
+}
+
+// Clean up connections on page unload
+window.addEventListener('beforeunload', () => {
+    if (sseSource) {
+        try { sseSource.close(); } catch(e) {}
+        sseSource = null;
+    }
+});
+
+function updateDashboard(data) {
+    if (!data) return;
+
+    // KPI Cards — immediate and animated
+    animateNumber('kpiTotal', data.total ?? 0);
+    animateNumber('kpiSent', data.sent ?? 0);
+    animateNumber('kpiPending', data.pending ?? 0);
+    animateNumber('kpiFailed', data.failed ?? 0);
+
+    // Progress Bar
+    const pBar = document.getElementById('progressBar');
+    const pPercent = document.getElementById('progressPercent');
+    const pct = data.progress !== undefined ? data.progress : 0;
+    if (pBar) pBar.style.width = pct + '%';
+    if (pPercent) pPercent.textContent = pct + '%';
+
+    // Status badge
+    updateStatus(data.status);
+
+    // Current phone
+    const cpRow = document.getElementById('currentPhoneRow');
+    const cpText = document.getElementById('currentPhone');
+    if (data.status === 'running' && data.current_phone && data.current_phone !== 'SYSTEM') {
+        cpRow.style.opacity = '1';
+        cpText.textContent = data.current_phone;
+    } else {
+        cpRow.style.opacity = '0';
+    }
+
+    // Countdown
+    const cdContainer = document.getElementById('countdownContainer');
+    const cdNum = document.getElementById('countdownNum');
+    const cdLabel = document.getElementById('countdownLabel');
+    if (data.next_send_countdown > 0 && data.status === 'running') {
+        cdContainer.style.opacity = '1';
+        cdNum.textContent = data.next_send_countdown;
+        cdLabel.textContent = data.next_send_countdown + ' soniya';
+        const maxDelay = parseInt(document.getElementById('maxDelay').value) || 35;
+        const progress = Math.max(0, 100 - (data.next_send_countdown / maxDelay * 100));
+        const ring = document.querySelector('.countdown-ring');
+        if (ring) ring.style.setProperty('--progress', progress);
+    } else {
+        cdContainer.style.opacity = '0';
+    }
+
+    // Button states
+    updateButtons(data.status);
+
+    // Terminal logs
+    if (data.logs && Array.isArray(data.logs)) {
+        updateTerminal(data.logs);
+    }
+
+    // Last update
+    const lut = document.getElementById('lastUpdateTime');
+    if (lut) lut.textContent = new Date().toLocaleTimeString('uz-UZ');
+}
+
+function animateNumber(elementId, target) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    if (el._animTimer) clearInterval(el._animTimer);
+    const current = parseInt(el.textContent) || 0;
+    if (current === target) {
+        el.textContent = target;
+        return;
+    }
+
+    const diff = target - current;
+    const steps = Math.min(Math.abs(diff), 10) || 1;
+    const increment = diff / steps;
+    let step = 0;
+
+    el._animTimer = setInterval(() => {
+        step++;
+        if (step >= steps) {
+            el.textContent = target;
+            clearInterval(el._animTimer);
+            el._animTimer = null;
+        } else {
+            el.textContent = Math.round(current + increment * step);
+        }
+    }, 25);
+}
+
+function updateStatus(status) {
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    const badge = document.getElementById('statusBadge');
+    if (!dot || !text || !badge) return;
+
+    const statusMap = {
+        idle: { label: 'Kutilmoqda', color: 'bg-gray-500', border: '' },
+        running: { label: 'Yuborilmoqda...', color: 'bg-emerald-500', border: 'glow-border' },
+        paused: { label: "To'xtatilgan", color: 'bg-amber-500', border: '' },
+        stopped: { label: 'Bekor qilingan', color: 'bg-red-500', border: '' },
+        completed: { label: 'Tugallangan ✅', color: 'bg-emerald-500', border: '' },
+    };
+
+    const s = statusMap[status] || statusMap.idle;
+    text.textContent = s.label;
+    dot.className = status === 'running' ? 'pulse-dot' : `w-2 h-2 rounded-full ${s.color}`;
+    badge.className = `flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-700/50 border text-xs font-medium ${s.border || 'border-dark-600/50'}`;
+}
+
+function updateButtons(status) {
+    const btnStart = document.getElementById('btnStart');
+    const btnPause = document.getElementById('btnPause');
+    const btnResume = document.getElementById('btnResume');
+    const btnStop = document.getElementById('btnStop');
+    if (!btnStart) return;
+
+    btnStart.disabled = status === 'running' || status === 'paused';
+    if (btnPause) btnPause.disabled = status !== 'running';
+    if (btnResume) btnResume.disabled = status !== 'paused';
+    if (btnStop) btnStop.disabled = status !== 'running' && status !== 'paused';
+
+    // Visual states
+    btnStart.classList.toggle('opacity-30', btnStart.disabled);
+    btnStart.classList.toggle('cursor-not-allowed', btnStart.disabled);
+}
+
+function updateTerminal(logs) {
+    const terminal = document.getElementById('terminal');
+    if (!terminal || !logs) return;
+
+    // Reset if logs restarted or cleared
+    if (logs.length < lastLogCount) {
+        terminal.innerHTML = '';
+        lastLogCount = 0;
+    }
+
+    if (logs.length === lastLogCount) return;
+
+    const newLogs = logs.slice(lastLogCount);
+    lastLogCount = logs.length;
+
+    newLogs.forEach(log => {
+        const line = document.createElement('div');
+        let cssClass = 'info';
+        let icon = '▸';
+
+        if (log.status === 'sent') { cssClass = 'sent'; icon = '✅'; }
+        else if (log.status === 'failed') { cssClass = 'failed'; icon = '❌'; }
+        else if (log.status === 'warning') { cssClass = 'warning'; icon = '⚠️'; }
+        else if (log.status === 'error') { cssClass = 'failed'; icon = '🛑'; }
+        else { icon = '▸'; }
+
+        line.className = `terminal-line ${cssClass} fade-in-up`;
+        line.innerHTML = `<span class="text-gray-600">[${log.time}]</span> <span>${icon}</span> <span class="text-gray-300 font-mono">${log.phone}</span> <span class="text-gray-600">—</span> ${log.message}`;
+        terminal.appendChild(line);
+    });
+
+    // Auto-scroll to bottom
+    terminal.scrollTop = terminal.scrollHeight;
+    const countEl = document.getElementById('logLineCount');
+    if (countEl) countEl.textContent = terminal.children.length;
+}
+
+function clearTerminal() {
+    const terminal = document.getElementById('terminal');
+    terminal.innerHTML = `<div class="terminal-line info"><span class="text-gray-600">[${new Date().toLocaleTimeString()}]</span> <span class="text-emerald-500/50"> ▸ </span><span class="text-gray-500">Terminal tozalandi</span></div>`;
+    lastLogCount = 0;
+    document.getElementById('logLineCount').textContent = '1';
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// CONTACTS
+// ═══════════════════════════════════════════════════════════════
+function handleFileDrop(event) {
+    event.preventDefault();
+    event.target.closest('#dropZone').classList.remove('border-emerald-500/60');
+    const file = event.dataTransfer.files[0];
+    if (file) uploadFile(file);
+}
+
+function handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (file) uploadFile(file);
+}
+
+async function uploadFile(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('session_id', sessionId);
+
+    try {
+        const resp = await fetch('/api/contacts/upload', { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (resp.ok) {
+            showContactBadge(data.total);
+            showToast(data.message, 'success');
+        } else {
+            showToast(data.detail || 'Xatolik yuz berdi', 'error');
+        }
+    } catch (e) {
+        showToast('Server bilan aloqa uzildi', 'error');
+    }
+}
+
+async function loadPastedContacts() {
+    const text = document.getElementById('pasteArea').value.trim();
+    if (!text) {
+        showToast("Raqamlarni kiriting!", 'warning');
+        return;
+    }
+
+    try {
+        const resp = await fetch('/api/contacts/paste', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, session_id: sessionId }),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            showContactBadge(data.total);
+            showToast(data.message, 'success');
+        } else {
+            showToast(data.detail || 'Xatolik yuz berdi', 'error');
+        }
+    } catch (e) {
+        showToast('Server bilan aloqa uzildi', 'error');
+    }
+}
+
+function showContactBadge(count) {
+    const badge = document.getElementById('contactBadge');
+    badge.textContent = count;
+    badge.classList.remove('hidden');
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// MESSAGE COMPOSER
+// ═══════════════════════════════════════════════════════════════
+function updateCharCounter() {
+    const text = document.getElementById('messageText').value;
+    const charCount = document.getElementById('charCount');
+    const charLimit = document.getElementById('charLimit');
+    const smsSegments = document.getElementById('smsSegments');
+
+    const len = text.length;
+    charCount.textContent = len;
+
+    // Detect encoding
+    const isGsm7 = /^[\x20-\x7E\n\r]*$/.test(text);
+    const singleLimit = isGsm7 ? 160 : 70;
+    const concatLimit = isGsm7 ? 153 : 67;
+
+    charLimit.textContent = singleLimit;
+
+    if (len === 0) {
+        smsSegments.textContent = '0';
+    } else if (len <= singleLimit) {
+        smsSegments.textContent = '1';
+    } else {
+        smsSegments.textContent = Math.ceil(len / concatLimit);
+    }
+
+    // Color feedback
+    charCount.className = len > singleLimit ? 'text-amber-400' : '';
+}
+
+function insertVariable() {
+    const textarea = document.getElementById('messageText');
+    const pos = textarea.selectionStart;
+    const text = textarea.value;
+    textarea.value = text.slice(0, pos) + '{ism}' + text.slice(pos);
+    textarea.focus();
+    textarea.selectionStart = textarea.selectionEnd = pos + 5;
+    updateCharCounter();
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// DELAY LABELS
+// ═══════════════════════════════════════════════════════════════
+function updateDelayLabels() {
+    const min = document.getElementById('minDelay');
+    const max = document.getElementById('maxDelay');
+    document.getElementById('minDelayVal').textContent = min.value;
+    document.getElementById('maxDelayVal').textContent = max.value;
+    // Ensure min <= max
+    if (parseInt(min.value) > parseInt(max.value)) {
+        max.value = min.value;
+        document.getElementById('maxDelayVal').textContent = max.value;
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// CAMPAIGN CONTROLS
+// ═══════════════════════════════════════════════════════════════
+async function saveDelaySettings() {
+    // Save delay settings alongside campaign start
+    const cfg = {
+        min_delay: parseInt(document.getElementById('minDelay').value),
+        max_delay: parseInt(document.getElementById('maxDelay').value),
+        daily_limit: parseInt(document.getElementById('dailyLimit').value) || 0,
+    };
+
+    // Load current config first, merge
+    try {
+        const resp = await fetch('/api/config');
+        const current = await resp.json();
+        Object.assign(current, cfg);
+        delete current.id;
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(current),
+        });
+    } catch (e) {
+        console.error('Failed to save delay settings', e);
+    }
+}
+
+async function startCampaign() {
+    const message = document.getElementById('messageText').value.trim();
+    if (!message) {
+        showToast("Xabar matnini kiriting!", 'warning');
+        return;
+    }
+
+    // Save delay settings first
+    await saveDelaySettings();
+
+    // Reset terminal
+    lastLogCount = 0;
+    const terminal = document.getElementById('terminal');
+    terminal.innerHTML = '';
+
+    try {
+        const resp = await fetch('/api/campaign/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message, session_id: sessionId }),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            showToast(data.message, 'success');
+            campaignActive = true;
+        } else {
+            showToast(data.detail || 'Xatolik', 'error');
+        }
+    } catch (e) {
+        showToast('Server bilan aloqa uzildi', 'error');
+    }
+}
+
+async function pauseCampaign() {
+    try {
+        const resp = await fetch('/api/campaign/pause', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) showToast(data.message, 'warning');
+        else showToast(data.detail, 'error');
+    } catch (e) { showToast('Xatolik', 'error'); }
+}
+
+async function resumeCampaign() {
+    try {
+        const resp = await fetch('/api/campaign/resume', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) showToast(data.message, 'success');
+        else showToast(data.detail, 'error');
+    } catch (e) { showToast('Xatolik', 'error'); }
+}
+
+async function stopCampaign() {
+    if (!confirm("Kampaniyani bekor qilmoqchimisiz?")) return;
+    try {
+        const resp = await fetch('/api/campaign/stop', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            showToast(data.message, 'error');
+            campaignActive = false;
+            loadHistory();
+        }
+        else showToast(data.detail, 'error');
+    } catch (e) { showToast('Xatolik', 'error'); }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// SETTINGS MODAL
+// ═══════════════════════════════════════════════════════════════
+function openSettingsModal() {
+    document.getElementById('settingsModal').classList.remove('hidden');
+    loadConfig();
+}
+
+function closeSettingsModal() {
+    document.getElementById('settingsModal').classList.add('hidden');
+}
+
+function toggleGatewayFields() {
+    const mode = document.getElementById('cfgGatewayMode').value;
+    const authGroup = document.getElementById('authGroup');
+    const gatewayUrlGroup = document.getElementById('gatewayUrlGroup');
+    const deviceIdGroup = document.getElementById('deviceIdGroup');
+    const apiKeyHint = document.getElementById('apiKeyHint');
+    const apiKeyLabel = document.getElementById('apiKeyLabel');
+
+    if (mode === 'textbee') {
+        if (authGroup) authGroup.style.display = 'none';
+        if (gatewayUrlGroup) gatewayUrlGroup.style.display = 'none';
+        if (deviceIdGroup) {
+            deviceIdGroup.classList.remove('hidden');
+            deviceIdGroup.style.display = 'block';
+        }
+        if (apiKeyHint) apiKeyHint.classList.remove('hidden');
+        if (apiKeyLabel) apiKeyLabel.textContent = 'TextBee API kalit (x-api-key)';
+    } else {
+        if (authGroup) authGroup.style.display = 'grid';
+        if (gatewayUrlGroup) gatewayUrlGroup.style.display = 'block';
+        if (deviceIdGroup) {
+            deviceIdGroup.classList.add('hidden');
+            deviceIdGroup.style.display = 'none';
+        }
+        if (apiKeyHint) apiKeyHint.classList.add('hidden');
+        if (apiKeyLabel) apiKeyLabel.textContent = 'API kalit (ixtiyoriy)';
+    }
+}
+
+async function loadConfig() {
+    try {
+        const resp = await fetch('/api/config');
+        const cfg = await resp.json();
+        document.getElementById('cfgGatewayMode').value = cfg.gateway_mode || 'local';
+        document.getElementById('cfgGatewayUrl').value = cfg.gateway_url || '';
+        if (document.getElementById('cfgDeviceId')) {
+            document.getElementById('cfgDeviceId').value = cfg.device_id || '';
+        }
+        document.getElementById('cfgApiKey').value = cfg.api_key || '';
+        document.getElementById('cfgUsername').value = cfg.username || '';
+        document.getElementById('cfgPassword').value = cfg.password || '';
+        document.getElementById('cfgSimSlot').value = cfg.sim_slot || '1';
+        document.getElementById('minDelay').value = cfg.min_delay || 15;
+        document.getElementById('maxDelay').value = cfg.max_delay || 35;
+        document.getElementById('dailyLimit').value = cfg.daily_limit || 500;
+        updateDelayLabels();
+        toggleGatewayFields();
+    } catch (e) {
+        console.error('Failed to load config', e);
+    }
+}
+
+async function saveSettings() {
+    const deviceIdInput = document.getElementById('cfgDeviceId');
+    let rawDeviceId = deviceIdInput ? deviceIdInput.value.trim() : '';
+
+    // Auto-clean if URL was pasted into Device ID
+    if (rawDeviceId.includes('/devices/')) {
+        const m = rawDeviceId.match(/\/devices\/([a-zA-Z0-9_\-]+)/);
+        if (m) rawDeviceId = m[1];
+    } else if (rawDeviceId.includes('textbee.dev')) {
+        const clean = rawDeviceId.split('?')[0].replace(/\/send-sms$/, '').replace(/\/+$/, '');
+        const parts = clean.split('/');
+        if (parts.length > 0) rawDeviceId = parts[parts.length - 1];
+    }
+    if (deviceIdInput) deviceIdInput.value = rawDeviceId;
+
+    const cfg = {
+        gateway_mode: document.getElementById('cfgGatewayMode').value,
+        gateway_url: document.getElementById('cfgGatewayUrl').value.trim(),
+        device_id: rawDeviceId,
+        api_key: document.getElementById('cfgApiKey').value.trim(),
+        username: document.getElementById('cfgUsername').value,
+        password: document.getElementById('cfgPassword').value,
+        sim_slot: document.getElementById('cfgSimSlot').value,
+        min_delay: parseInt(document.getElementById('minDelay').value),
+        max_delay: parseInt(document.getElementById('maxDelay').value),
+        daily_limit: parseInt(document.getElementById('dailyLimit').value) || 0,
+    };
+
+    try {
+        const resp = await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            showToast("Sozlamalar saqlandi ✅", 'success');
+            closeSettingsModal();
+        } else {
+            showToast(data.detail || 'Xatolik', 'error');
+        }
+    } catch (e) {
+        showToast('Server bilan aloqa uzildi', 'error');
+    }
+}
+
+async function sendTestSms() {
+    const phone = document.getElementById('testPhone').value.trim();
+    if (!phone) {
+        showToast("Test raqamni kiriting!", 'warning');
+        return;
+    }
+
+    const resultEl = document.getElementById('testResult');
+    resultEl.classList.remove('hidden');
+    resultEl.textContent = "Yuborilmoqda...";
+    resultEl.className = 'text-xs mt-2 text-gray-400';
+
+    const deviceIdInput = document.getElementById('cfgDeviceId');
+    let rawDeviceId = deviceIdInput ? deviceIdInput.value.trim() : '';
+    if (rawDeviceId.includes('/devices/')) {
+        const m = rawDeviceId.match(/\/devices\/([a-zA-Z0-9_\-]+)/);
+        if (m) rawDeviceId = m[1];
+    }
+
+    const testPayload = {
+        phone: phone,
+        message: "Test SMS — Dashboard tekshiruvi ✅",
+        gateway_mode: document.getElementById('cfgGatewayMode').value,
+        gateway_url: document.getElementById('cfgGatewayUrl').value.trim(),
+        device_id: rawDeviceId,
+        api_key: document.getElementById('cfgApiKey').value.trim()
+    };
+
+    // Save settings in background first
+    try {
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                gateway_mode: testPayload.gateway_mode,
+                gateway_url: testPayload.gateway_url,
+                device_id: testPayload.device_id,
+                api_key: testPayload.api_key,
+                username: document.getElementById('cfgUsername').value,
+                password: document.getElementById('cfgPassword').value,
+                sim_slot: document.getElementById('cfgSimSlot').value,
+                min_delay: parseInt(document.getElementById('minDelay').value) || 15,
+                max_delay: parseInt(document.getElementById('maxDelay').value) || 35,
+                daily_limit: parseInt(document.getElementById('dailyLimit').value) || 500,
+            }),
+        });
+    } catch (e) {}
+
+    try {
+        const resp = await fetch('/api/test-sms', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(testPayload),
+        });
+        const data = await resp.json();
+        resultEl.classList.remove('hidden');
+        if (data.ok) {
+            resultEl.textContent = data.message;
+            resultEl.className = 'text-xs mt-2 text-emerald-400 font-medium';
+            showToast(data.message, 'success');
+        } else {
+            resultEl.textContent = data.message;
+            resultEl.className = 'text-xs mt-2 text-red-400 font-medium';
+            showToast(data.message, 'error');
+        }
+    } catch (e) {
+        resultEl.textContent = 'Server bilan aloqa uzildi';
+        resultEl.className = 'text-xs mt-2 text-red-400 font-medium';
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// HISTORY
+// ═══════════════════════════════════════════════════════════════
+function toggleHistory() {
+    const content = document.getElementById('historyContent');
+    const chevron = document.getElementById('historyChevron');
+    content.classList.toggle('hidden');
+    chevron.style.transform = content.classList.contains('hidden') ? '' : 'rotate(180deg)';
+    if (!content.classList.contains('hidden')) loadHistory();
+}
+
+async function loadHistory() {
+    try {
+        const resp = await fetch('/api/history');
+        const data = await resp.json();
+        const list = document.getElementById('historyList');
+
+        if (!data.campaigns || data.campaigns.length === 0) {
+            list.innerHTML = '<p class="text-sm text-gray-600 text-center py-4">Hali kampaniya yo\'q</p>';
+            return;
+        }
+
+        list.innerHTML = data.campaigns.map(c => {
+            const statusColors = {
+                completed: 'text-emerald-400',
+                running: 'text-blue-400',
+                paused: 'text-amber-400',
+                stopped: 'text-red-400',
+            };
+            const statusLabels = {
+                completed: 'Tugallangan',
+                running: 'Jarayonda',
+                paused: "To'xtatilgan",
+                stopped: 'Bekor qilingan',
+            };
+            const color = statusColors[c.status] || 'text-gray-400';
+            const label = statusLabels[c.status] || c.status;
+
+            return `
+                <div class="flex items-center justify-between p-3 rounded-xl bg-dark-900/50 border border-dark-700/50 hover:border-dark-600 transition-colors">
+                    <div>
+                        <p class="text-xs font-mono text-gray-500">${c.id}</p>
+                        <p class="text-xs text-gray-600 mt-0.5">${c.created_at || ''}</p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-xs ${color} font-medium">${label}</p>
+                        <p class="text-[11px] text-gray-600">✅ ${c.sent || 0} &nbsp; ❌ ${c.failed || 0} &nbsp; / &nbsp; ${c.total || 0}</p>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (e) {
+        console.error('Failed to load history', e);
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// EXPORT DROPDOWN
+// ═══════════════════════════════════════════════════════════════
+function toggleExportMenu() {
+    document.getElementById('exportMenu').classList.toggle('hidden');
+}
+
+// Close dropdown on outside click
+document.addEventListener('click', (e) => {
+    if (!document.getElementById('exportDropdown').contains(e.target)) {
+        document.getElementById('exportMenu').classList.add('hidden');
+    }
+});
+
+
+// ═══════════════════════════════════════════════════════════════
+// TOAST NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════
+function showToast(message, type = 'success') {
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+        <div class="flex items-center gap-2">
+            ${type === 'success' ? '✅' : type === 'error' ? '❌' : '⚠️'}
+            <span>${message}</span>
+        </div>
+    `;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3500);
+}
+</script>
+
+</body>
+</html>
+
