@@ -16,13 +16,15 @@ import io
 import os
 import uuid
 import socket
+import hashlib
+import secrets
 from datetime import datetime, date
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Optional, List
 
-from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
-from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, UploadFile, File, Form, Request, Response, HTTPException, Query
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import httpx
@@ -50,6 +52,25 @@ def get_local_ip() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PASSWORD HASHING (STANDARD LIBRARY SHA-256 + SALT)
+# ═══════════════════════════════════════════════════════════════════════════════
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    h = hashlib.sha256((salt + password).encode()).hexdigest()
+    return f"{salt}:{h}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        if ":" not in stored:
+            return password == stored
+        salt, h = stored.split(":", 1)
+        return hashlib.sha256((salt + password).encode()).hexdigest() == h
+    except Exception:
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # DATABASE
 # ═══════════════════════════════════════════════════════════════════════════════
 @contextmanager
@@ -66,8 +87,26 @@ def init_db():
     with get_db() as conn:
         c = conn.cursor()
         c.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                full_name TEXT DEFAULT '',
+                role TEXT DEFAULT 'user',
+                device_token TEXT UNIQUE NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS config (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER DEFAULT 1,
                 gateway_mode TEXT DEFAULT 'custom_android',
                 gateway_url TEXT DEFAULT 'http://192.168.1.105:8080',
                 api_key TEXT DEFAULT '',
@@ -80,10 +119,9 @@ def init_db():
                 daily_limit INTEGER DEFAULT 500
             );
 
-            INSERT OR IGNORE INTO config (id) VALUES (1);
-
             CREATE TABLE IF NOT EXISTS contacts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER DEFAULT 1,
                 phone TEXT NOT NULL,
                 name TEXT DEFAULT '',
                 session_id TEXT NOT NULL,
@@ -92,6 +130,7 @@ def init_db():
 
             CREATE TABLE IF NOT EXISTS sms_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER DEFAULT 1,
                 campaign_id TEXT NOT NULL,
                 phone TEXT NOT NULL,
                 name TEXT DEFAULT '',
@@ -104,6 +143,7 @@ def init_db():
 
             CREATE TABLE IF NOT EXISTS campaigns (
                 id TEXT PRIMARY KEY,
+                user_id INTEGER DEFAULT 1,
                 total INTEGER DEFAULT 0,
                 sent INTEGER DEFAULT 0,
                 failed INTEGER DEFAULT 0,
@@ -113,14 +153,38 @@ def init_db():
                 completed_at TIMESTAMP
             );
         """)
-        # Ensure device_id column exists
+
+        # Migration: Ensure user_id column exists in existing tables
+        for tbl in ["contacts", "campaigns", "sms_logs", "config"]:
+            c.execute(f"PRAGMA table_info({tbl})")
+            cols = [col[1] for col in c.fetchall()]
+            if "user_id" not in cols:
+                c.execute(f"ALTER TABLE {tbl} ADD COLUMN user_id INTEGER DEFAULT 1")
+
+        # Ensure device_id column exists in config
         c.execute("PRAGMA table_info(config)")
-        cols = [col[1] for col in c.fetchall()]
-        if "device_id" not in cols:
+        cfg_cols = [col[1] for col in c.fetchall()]
+        if "device_id" not in cfg_cols:
             c.execute("ALTER TABLE config ADD COLUMN device_id TEXT DEFAULT ''")
 
-        # Set default to custom_android if local or empty
-        c.execute("UPDATE config SET gateway_mode = 'custom_android' WHERE id = 1 AND (gateway_mode = 'local' OR gateway_mode = '' OR gateway_mode IS NULL)")
+        # Seed initial admin account if users table is empty
+        c.execute("SELECT COUNT(*) FROM users")
+        user_count = c.fetchone()[0]
+        if user_count == 0:
+            admin_pwd = hash_password("admin123")
+            c.execute(
+                "INSERT INTO users (id, username, password_hash, full_name, role, device_token, is_active) VALUES (1, 'admin', ?, 'Administrator', 'admin', 'admin', 1)",
+                (admin_pwd,),
+            )
+            # Ensure config for user 1
+            c.execute("SELECT COUNT(*) FROM config WHERE user_id = 1")
+            if c.fetchone()[0] == 0:
+                c.execute(
+                    "INSERT INTO config (user_id, gateway_mode, min_delay, max_delay, daily_limit, sim_slot) VALUES (1, 'custom_android', 15, 35, 500, '1')"
+                )
+            else:
+                c.execute("UPDATE config SET gateway_mode = 'custom_android', user_id = 1 WHERE id = 1 OR user_id = 1")
+
         conn.commit()
 
 
@@ -130,6 +194,23 @@ init_db()
 # ═══════════════════════════════════════════════════════════════════════════════
 # PYDANTIC MODELS
 # ═══════════════════════════════════════════════════════════════════════════════
+class LoginModel(BaseModel):
+    username: str
+    password: str
+
+
+class CreateUserModel(BaseModel):
+    username: str
+    password: str
+    full_name: Optional[str] = ""
+    role: Optional[str] = "user"
+    device_token: Optional[str] = ""
+
+
+class ResetPasswordModel(BaseModel):
+    new_password: str
+
+
 class ConfigModel(BaseModel):
     gateway_mode: str = "custom_android"
     gateway_url: str = "http://192.168.1.105:8080"
@@ -148,6 +229,7 @@ class MobileReportModel(BaseModel):
     phone: str
     status: str
     error: Optional[str] = ""
+    device_token: Optional[str] = ""
 
 
 class PasteContactsModel(BaseModel):
@@ -234,9 +316,10 @@ def parse_contacts_text(text: str) -> list:
 # CAMPAIGN ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
 class CampaignEngine:
-    """Background SMS sending engine with pause/resume/stop controls."""
+    """Background SMS sending engine with pause/resume/stop controls per user."""
 
-    def __init__(self):
+    def __init__(self, user_id: int = 1):
+        self.user_id = user_id
         self.status = "idle"
         self.total = 0
         self.sent = 0
@@ -303,7 +386,9 @@ class CampaignEngine:
 
     def _load_config(self):
         with get_db() as conn:
-            row = conn.execute("SELECT * FROM config WHERE id = 1").fetchone()
+            row = conn.execute("SELECT * FROM config WHERE user_id = ? ORDER BY id DESC LIMIT 1", (self.user_id,)).fetchone()
+            if not row and self.user_id == 1:
+                row = conn.execute("SELECT * FROM config WHERE id = 1").fetchone()
             if row:
                 self.gateway_mode = row["gateway_mode"] or "custom_android"
                 self.gateway_url = row["gateway_url"] or ""
@@ -437,8 +522,8 @@ class CampaignEngine:
         # Save campaign to DB
         with get_db() as conn:
             conn.execute(
-                "INSERT INTO campaigns (id, total, status, message_template) VALUES (?, ?, 'running', ?)",
-                (self.campaign_id, self.total, message),
+                "INSERT INTO campaigns (id, user_id, total, status, message_template) VALUES (?, ?, ?, 'running', ?)",
+                (self.campaign_id, self.user_id, self.total, message),
             )
             conn.commit()
 
@@ -598,9 +683,10 @@ class CampaignEngine:
                     try:
                         with get_db() as conn:
                             conn.execute(
-                                "INSERT INTO sms_logs (campaign_id, phone, name, message, status, error_msg, sim_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                "INSERT INTO sms_logs (campaign_id, user_id, phone, name, message, status, error_msg, sim_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                                 (
                                     self.campaign_id,
+                                    self.user_id,
                                     phone,
                                     name,
                                     msg,
@@ -678,54 +764,304 @@ class CampaignEngine:
                 self.next_send_countdown = 0
 
 
-# Global engine instance
-engine = CampaignEngine()
+# ═══════════════════════════════════════════════════════════════════════════════
+# MULTI-USER ENGINE MANAGER & AUTH HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+engines: dict = {}
+engine_lock = threading.Lock()
+
+
+def get_engine(user_id: int) -> CampaignEngine:
+    with engine_lock:
+        if user_id not in engines:
+            engines[user_id] = CampaignEngine(user_id=user_id)
+        return engines[user_id]
+
+
+def get_current_user(request: Request) -> Optional[dict]:
+    token = request.cookies.get("session_token")
+    if not token:
+        auth = request.headers.get("Authorization")
+        if auth and auth.startswith("Bearer "):
+            token = auth[7:].strip()
+    if not token:
+        return None
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT u.id, u.username, u.full_name, u.role, u.device_token, u.is_active
+               FROM sessions s
+               JOIN users u ON s.user_id = u.id
+               WHERE s.token = ? AND u.is_active = 1""",
+            (token,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def require_user(request: Request) -> dict:
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Tizimga kirilmagan! Iltimos, avval login qiling.")
+    return user
+
+
+def require_admin(request: Request) -> dict:
+    user = require_user(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Ruxsat etilmagan! Faqat administrator uchun.")
+    return user
+
+
+def resolve_user_for_device(token: Optional[str] = None) -> Optional[dict]:
+    with get_db() as conn:
+        if token:
+            clean_tok = token.strip()
+            row = conn.execute(
+                "SELECT id, username, full_name, role, device_token FROM users WHERE (device_token = ? OR username = ?) AND is_active = 1",
+                (clean_tok, clean_tok),
+            ).fetchone()
+            if row:
+                return dict(row)
+        # Fallback to admin or first user
+        row = conn.execute("SELECT id, username, full_name, role, device_token FROM users WHERE role = 'admin' AND is_active = 1 LIMIT 1").fetchone()
+        if row:
+            return dict(row)
+        row = conn.execute("SELECT id, username, full_name, role, device_token FROM users WHERE is_active = 1 LIMIT 1").fetchone()
+        return dict(row) if row else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROUTES — PAGES
+# ROUTES — AUTH & PAGES
 # ═══════════════════════════════════════════════════════════════════════════════
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    user = get_current_user(request)
+    if user:
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.post("/api/login")
+async def api_login(data: LoginModel, response: Response):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id, username, password_hash, full_name, role, device_token, is_active FROM users WHERE username = ?",
+            (data.username.strip().lower(),),
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "Login yoki parol noto'g'ri")
+        user = dict(row)
+        if not user.get("is_active"):
+            raise HTTPException(403, "Ushbu hisob faolsizlantirilgan. Administratorga murojaat qiling.")
+        if not verify_password(data.password, user["password_hash"]):
+            raise HTTPException(400, "Login yoki parol noto'g'ri")
+
+        session_token = secrets.token_hex(32)
+        conn.execute("INSERT INTO sessions (token, user_id) VALUES (?, ?)", (session_token, user["id"]))
+        conn.commit()
+
+        resp = JSONResponse({
+            "ok": True,
+            "message": "Muvaffaqiyatli kirildi",
+            "redirect": "/",
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "full_name": user["full_name"],
+                "role": user["role"],
+                "device_token": user["device_token"],
+            },
+        })
+        resp.set_cookie(key="session_token", value=session_token, max_age=30 * 86400, httponly=True, samesite="lax")
+        return resp
+
+
+@app.post("/api/logout")
+async def api_logout(request: Request):
+    token = request.cookies.get("session_token")
+    if token:
+        with get_db() as conn:
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+            conn.commit()
+    resp = JSONResponse({"ok": True, "redirect": "/login"})
+    resp.delete_cookie(key="session_token")
+    return resp
+
+
+@app.get("/api/me")
+async def api_me(request: Request):
+    user = require_user(request)
+    return {"user": user}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
     local_ip = get_local_ip()
-    return templates.TemplateResponse("index.html", {"request": request, "server_ip": local_ip})
+    return templates.TemplateResponse("index.html", {"request": request, "server_ip": local_ip, "user": user})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROUTES — ADMIN (USER MANAGEMENT)
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/admin/users")
+async def admin_list_users(request: Request):
+    require_admin(request)
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, username, full_name, role, device_token, is_active, created_at FROM users ORDER BY id ASC"
+        ).fetchall()
+        return {"users": [dict(r) for r in rows]}
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(data: CreateUserModel, request: Request):
+    require_admin(request)
+    username = data.username.strip().lower()
+    if not username or len(username) < 3:
+        raise HTTPException(400, "Login kamida 3 ta belgidan iborat bo'lishi kerak")
+    if not data.password or len(data.password) < 4:
+        raise HTTPException(400, "Parol kamida 4 ta belgidan iborat bo'lishi kerak")
+
+    device_token = (data.device_token or "").strip() or username
+    pwd_hash = hash_password(data.password)
+
+    with get_db() as conn:
+        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        if existing:
+            raise HTTPException(400, f"'{username}' nomli login allaqachon mavjud!")
+        tok_existing = conn.execute("SELECT id FROM users WHERE device_token = ?", (device_token,)).fetchone()
+        if tok_existing:
+            device_token = f"{device_token}_{secrets.token_hex(2)}"
+
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO users (username, password_hash, full_name, role, device_token, is_active) VALUES (?, ?, ?, ?, ?, 1)",
+            (username, pwd_hash, data.full_name or username, data.role or "user", device_token),
+        )
+        new_id = cursor.lastrowid
+        # Create default config for this user
+        conn.execute(
+            "INSERT INTO config (user_id, gateway_mode, min_delay, max_delay, daily_limit, sim_slot) VALUES (?, 'custom_android', 15, 35, 500, '1')",
+            (new_id,),
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "message": f"Foydalanuvchi '{username}' muvaffaqiyatli yaratildi",
+        "user": {
+            "id": new_id,
+            "username": username,
+            "full_name": data.full_name,
+            "device_token": device_token,
+        },
+    }
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: int, request: Request):
+    curr = require_admin(request)
+    if curr["id"] == user_id:
+        raise HTTPException(400, "O'zingizning administrator akkauntingizni o'chira olmaysiz!")
+
+    with get_db() as conn:
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.execute("DELETE FROM config WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+    with engine_lock:
+        if user_id in engines:
+            engines[user_id].stop()
+            del engines[user_id]
+
+    return {"ok": True, "message": "Foydalanuvchi o'chirildi"}
+
+
+@app.post("/api/admin/users/{user_id}/reset-password")
+async def admin_reset_password(user_id: int, data: ResetPasswordModel, request: Request):
+    require_admin(request)
+    if not data.new_password or len(data.new_password) < 4:
+        raise HTTPException(400, "Yangi parol kamida 4 ta belgidan iborat bo'lishi kerak")
+
+    pwd_hash = hash_password(data.new_password)
+    with get_db() as conn:
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (pwd_hash, user_id))
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+    return {"ok": True, "message": "Parol yangilandi"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROUTES — CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/config")
-async def get_config():
+async def get_config(request: Request):
+    user = require_user(request)
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM config WHERE id = 1").fetchone()
+        row = conn.execute("SELECT * FROM config WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchone()
+        if not row:
+            conn.execute("INSERT INTO config (user_id, gateway_mode) VALUES (?, 'custom_android')", (user["id"],))
+            conn.commit()
+            row = conn.execute("SELECT * FROM config WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user["id"],)).fetchone()
         data = dict(row)
         data["server_ip"] = get_local_ip()
+        data["device_token"] = user.get("device_token", "")
+        data["username"] = user.get("username", "")
         return data
 
 
 @app.post("/api/config")
-async def save_config(cfg: ConfigModel):
+async def save_config(cfg: ConfigModel, request: Request):
+    user = require_user(request)
     with get_db() as conn:
-        conn.execute(
-            """UPDATE config SET
-                gateway_mode = ?, gateway_url = ?, api_key = ?,
-                device_id = ?, username = ?, password = ?, sim_slot = ?,
-                min_delay = ?, max_delay = ?, daily_limit = ?
-            WHERE id = 1""",
-            (
-                cfg.gateway_mode,
-                cfg.gateway_url,
-                cfg.api_key,
-                cfg.device_id,
-                cfg.username,
-                cfg.password,
-                cfg.sim_slot,
-                cfg.min_delay,
-                cfg.max_delay,
-                cfg.daily_limit,
-            ),
-        )
+        row = conn.execute("SELECT id FROM config WHERE user_id = ?", (user["id"],)).fetchone()
+        if row:
+            conn.execute(
+                """UPDATE config SET
+                    gateway_mode = ?, gateway_url = ?, api_key = ?,
+                    device_id = ?, username = ?, password = ?, sim_slot = ?,
+                    min_delay = ?, max_delay = ?, daily_limit = ?
+                WHERE user_id = ?""",
+                (
+                    cfg.gateway_mode,
+                    cfg.gateway_url,
+                    cfg.api_key,
+                    cfg.device_id,
+                    cfg.username,
+                    cfg.password,
+                    cfg.sim_slot,
+                    cfg.min_delay,
+                    cfg.max_delay,
+                    cfg.daily_limit,
+                    user["id"],
+                ),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO config (user_id, gateway_mode, gateway_url, api_key, device_id, username, password, sim_slot, min_delay, max_delay, daily_limit)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user["id"],
+                    cfg.gateway_mode,
+                    cfg.gateway_url,
+                    cfg.api_key,
+                    cfg.device_id,
+                    cfg.username,
+                    cfg.password,
+                    cfg.sim_slot,
+                    cfg.min_delay,
+                    cfg.max_delay,
+                    cfg.daily_limit,
+                ),
+            )
         conn.commit()
+
+    eng = get_engine(user["id"])
+    eng._load_config()
     return {"ok": True, "message": "Sozlamalar saqlandi"}
 
 
@@ -733,7 +1069,8 @@ async def save_config(cfg: ConfigModel):
 # ROUTES — CONTACTS
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.post("/api/contacts/upload")
-async def upload_contacts(file: UploadFile = File(...), session_id: str = Form("")):
+async def upload_contacts(request: Request, file: UploadFile = File(...), session_id: str = Form("")):
+    user = require_user(request)
     if not session_id:
         session_id = uuid.uuid4().hex[:12]
 
@@ -748,10 +1085,10 @@ async def upload_contacts(file: UploadFile = File(...), session_id: str = Form("
         raise HTTPException(400, "Hech qanday to'g'ri raqam topilmadi")
 
     with get_db() as conn:
-        conn.execute("DELETE FROM contacts WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM contacts WHERE user_id = ? AND session_id = ?", (user["id"], session_id))
         conn.executemany(
-            "INSERT OR IGNORE INTO contacts (phone, name, session_id) VALUES (?, ?, ?)",
-            [(p, n, session_id) for p, n in contacts],
+            "INSERT OR IGNORE INTO contacts (user_id, phone, name, session_id) VALUES (?, ?, ?, ?)",
+            [(user["id"], p, n, session_id) for p, n in contacts],
         )
         conn.commit()
 
@@ -764,17 +1101,18 @@ async def upload_contacts(file: UploadFile = File(...), session_id: str = Form("
 
 
 @app.post("/api/contacts/paste")
-async def paste_contacts(data: PasteContactsModel):
+async def paste_contacts(data: PasteContactsModel, request: Request):
+    user = require_user(request)
     session_id = data.session_id or uuid.uuid4().hex[:12]
     contacts = parse_contacts_text(data.text)
     if not contacts:
         raise HTTPException(400, "Hech qanday to'g'ri raqam topilmadi")
 
     with get_db() as conn:
-        conn.execute("DELETE FROM contacts WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM contacts WHERE user_id = ? AND session_id = ?", (user["id"], session_id))
         conn.executemany(
-            "INSERT OR IGNORE INTO contacts (phone, name, session_id) VALUES (?, ?, ?)",
-            [(p, n, session_id) for p, n in contacts],
+            "INSERT OR IGNORE INTO contacts (user_id, phone, name, session_id) VALUES (?, ?, ?, ?)",
+            [(user["id"], p, n, session_id) for p, n in contacts],
         )
         conn.commit()
 
@@ -787,11 +1125,12 @@ async def paste_contacts(data: PasteContactsModel):
 
 
 @app.get("/api/contacts/{session_id}")
-async def get_contacts(session_id: str):
+async def get_contacts(session_id: str, request: Request):
+    user = require_user(request)
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT phone, name FROM contacts WHERE session_id = ? ORDER BY id",
-            (session_id,),
+            "SELECT phone, name FROM contacts WHERE user_id = ? AND session_id = ? ORDER BY id",
+            (user["id"], session_id),
         ).fetchall()
     return {"contacts": [dict(r) for r in rows], "total": len(rows)}
 
@@ -800,11 +1139,12 @@ async def get_contacts(session_id: str):
 # ROUTES — CAMPAIGN CONTROLS
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.post("/api/campaign/start")
-async def start_campaign(data: StartCampaignModel):
+async def start_campaign(data: StartCampaignModel, request: Request):
+    user = require_user(request)
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT phone, name FROM contacts WHERE session_id = ? ORDER BY id",
-            (data.session_id,),
+            "SELECT phone, name FROM contacts WHERE user_id = ? AND session_id = ? ORDER BY id",
+            (user["id"], data.session_id),
         ).fetchall()
 
     contacts = [(r["phone"], r["name"]) for r in rows]
@@ -813,158 +1153,192 @@ async def start_campaign(data: StartCampaignModel):
     if not data.message.strip():
         raise HTTPException(400, "Xabar matni bo'sh bo'lmasligi kerak!")
 
-    ok, msg = engine.start(contacts, data.message)
+    eng = get_engine(user["id"])
+    ok, msg = eng.start(contacts, data.message)
     if not ok:
         raise HTTPException(400, msg)
-    return {"ok": True, "message": msg, "campaign_id": engine.campaign_id}
+    return {"ok": True, "message": msg, "campaign_id": eng.campaign_id}
 
 
 @app.post("/api/campaign/pause")
-async def pause_campaign():
-    ok, msg = engine.pause()
+async def pause_campaign(request: Request):
+    user = require_user(request)
+    eng = get_engine(user["id"])
+    ok, msg = eng.pause()
     if not ok:
         raise HTTPException(400, msg)
     return {"ok": True, "message": msg}
 
 
 @app.post("/api/campaign/resume")
-async def resume_campaign():
-    ok, msg = engine.resume()
+async def resume_campaign(request: Request):
+    user = require_user(request)
+    eng = get_engine(user["id"])
+    ok, msg = eng.resume()
     if not ok:
         raise HTTPException(400, msg)
     return {"ok": True, "message": msg}
 
 
 @app.post("/api/campaign/stop")
-async def stop_campaign():
-    ok, msg = engine.stop()
+async def stop_campaign(request: Request):
+    user = require_user(request)
+    eng = get_engine(user["id"])
+    ok, msg = eng.stop()
     if not ok:
         raise HTTPException(400, msg)
     return {"ok": True, "message": msg}
 
 
 @app.get("/api/campaign/status")
-async def campaign_status():
-    return engine.get_state()
+async def campaign_status(request: Request):
+    user = require_user(request)
+    eng = get_engine(user["id"])
+    return eng.get_state()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROUTES — TEST SMS
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.post("/api/test-sms")
-async def test_sms(data: TestSmsModel):
+async def test_sms(data: TestSmsModel, request: Request):
+    user = require_user(request)
+    eng = get_engine(user["id"])
     phone = clean_phone(data.phone)
     if not phone:
         raise HTTPException(400, "Noto'g'ri telefon raqam! Namuna: +998901234567")
 
-    engine._load_config()
+    eng._load_config()
 
-    # Override with parameters passed from modal if present
     if data.device_id:
-        engine.device_id = data.device_id
+        eng.device_id = data.device_id
     if data.api_key:
-        engine.api_key = data.api_key
+        eng.api_key = data.api_key
     if data.gateway_mode:
-        engine.gateway_mode = data.gateway_mode
+        eng.gateway_mode = data.gateway_mode
     if data.gateway_url:
-        engine.gateway_url = data.gateway_url
+        eng.gateway_url = data.gateway_url
 
-    if engine.gateway_mode == "custom_android":
-        sim_val = engine.sim_slot
+    if eng.gateway_mode == "custom_android":
+        sim_val = eng.sim_slot
         sim_int = int(sim_val) if str(sim_val).isdigit() else 1
-        engine.test_task = {
+        eng.test_task = {
             "has_task": True,
             "task_id": f"test_{uuid.uuid4().hex[:6]}",
             "phone": phone,
             "message": data.message,
             "sim_slot": sim_int,
         }
-        engine._add_log(phone, "info", f"📱 Test SMS navbatga qo'yildi. 'SMS Bridge Pro' ilovangiz yuboradi: {phone}")
+        eng._add_log(phone, "info", f"📱 Test SMS navbatga qo'yildi. 'SMS Bridge Pro' ilovangiz yuboradi: {phone}")
         return {"ok": True, "message": f"Test SMS navbatga qo'yildi. 'SMS Bridge Pro' ilovangiz orqali yuboriladi ✅"}
 
-    sim = engine._get_current_sim()
-    success, error = engine._send_sms(phone, data.message, sim)
+    sim = eng._get_current_sim()
+    success, error = eng._send_sms(phone, data.message, sim)
 
     if success:
-        engine._add_log(phone, "sent", "Test SMS muvaffaqiyatli yuborildi ✅")
+        eng._add_log(phone, "sent", "Test SMS muvaffaqiyatli yuborildi ✅")
         return {"ok": True, "message": f"Test SMS {phone} ga muvaffaqiyatli yuborildi ✅"}
     else:
-        engine._add_log(phone, "failed", f"Test SMS xatosi: {error}")
+        eng._add_log(phone, "failed", f"Test SMS xatosi: {error}")
         return {"ok": False, "message": f"Xatolik: {error}"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROUTES — MOBILE ANDROID GATEWAY (PULL QUEUE)
+# ROUTES — MOBILE ANDROID GATEWAY (PULL QUEUE) — MULTI-DEVICE SUPPORT
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/mobile/ping")
-def mobile_ping():
+@app.get("/api/mobile/{token}/ping")
+@app.get("/u/{token}/api/mobile/ping")
+def mobile_ping(token: Optional[str] = None):
+    user = resolve_user_for_device(token)
+    if not user:
+        return {"status": "error", "message": "Foydalanuvchi topilmadi"}
+    eng = get_engine(user["id"])
     return {
         "status": "ok",
+        "username": user["username"],
+        "device_token": user["device_token"],
         "server_ip": get_local_ip(),
-        "campaign_active": engine.status == "running",
-        "gateway_mode": engine.gateway_mode,
+        "campaign_active": eng.status == "running",
+        "gateway_mode": eng.gateway_mode,
     }
 
 
 @app.get("/api/mobile/poll")
-def mobile_poll():
+@app.get("/api/mobile/{token}/poll")
+@app.get("/u/{token}/api/mobile/poll")
+def mobile_poll(token: Optional[str] = None):
+    user = resolve_user_for_device(token)
+    if not user:
+        return {"has_task": False, "wait_seconds": 5, "message": "Foydalanuvchi topilmadi"}
+    eng = get_engine(user["id"])
+
     # 1. Check if there's a test task waiting
-    if engine.test_task:
-        task = dict(engine.test_task)
+    if eng.test_task:
+        task = dict(eng.test_task)
         return task
 
     # 2. Check if a campaign is active
-    if engine.status != "running":
+    if eng.status != "running":
         return {"has_task": False, "wait_seconds": 3, "message": "Kampaniya faol emas"}
 
     # 3. If in anti-spam countdown delay
-    if engine.next_send_countdown > 0:
-        return {"has_task": False, "wait_seconds": engine.next_send_countdown, "message": "Anti-spam tanaffus"}
+    if eng.next_send_countdown > 0:
+        return {"has_task": False, "wait_seconds": eng.next_send_countdown, "message": "Anti-spam tanaffus"}
 
     # 4. If current task is ready for pulling
-    if engine.current_task:
-        return engine.current_task
+    if eng.current_task:
+        return eng.current_task
 
     return {"has_task": False, "wait_seconds": 2}
 
 
 @app.post("/api/mobile/report")
-def mobile_report(rep: MobileReportModel):
+@app.post("/api/mobile/{token}/report")
+@app.post("/u/{token}/api/mobile/report")
+def mobile_report(rep: MobileReportModel, token: Optional[str] = None):
+    device_tok = token or getattr(rep, "device_token", None)
+    user = resolve_user_for_device(device_tok)
+    if not user:
+        return {"ok": False, "message": "Foydalanuvchi topilmadi"}
+    eng = get_engine(user["id"])
+
     # If this was a test task
     if rep.task_id.startswith("test_"):
         if rep.status == "sent":
-            engine._add_log(rep.phone, "sent", f"✅ Test SMS yuborildi (SMS Bridge Pro): {rep.phone}")
+            eng._add_log(rep.phone, "sent", f"✅ Test SMS yuborildi (SMS Bridge Pro): {rep.phone}")
         else:
-            engine._add_log(rep.phone, "failed", f"❌ Test SMS xatosi: {rep.error or 'Yuborilmadi'}")
-        engine.test_task = None
+            eng._add_log(rep.phone, "failed", f"❌ Test SMS xatosi: {rep.error or 'Yuborilmadi'}")
+        eng.test_task = None
         return {"ok": True, "message": "Test hisoboti qabul qilindi"}
 
     # Campaign task
-    engine.last_report = {
+    eng.last_report = {
         "task_id": rep.task_id,
         "phone": rep.phone,
         "status": rep.status,
         "error": rep.error or "",
     }
-    engine.task_reported_event.set()
+    eng.task_reported_event.set()
     return {"ok": True, "message": "Hisobot qabul qilindi"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROUTES — SSE STREAM
+# ROUTES — SSE STREAM (PER USER)
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/stream")
 async def sse_stream(request: Request):
     """Server-Sent Events endpoint for real-time campaign updates."""
+    user = require_user(request)
+    eng = get_engine(user["id"])
 
     import asyncio
 
     async def event_generator():
-        last_log_count = 0
         while True:
             if await request.is_disconnected():
                 break
-            state = engine.get_state()
+            state = eng.get_state()
             yield f"data: {json.dumps(state, ensure_ascii=False)}\n\n"
             await asyncio.sleep(1.5)
 
@@ -980,20 +1354,22 @@ async def sse_stream(request: Request):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROUTES — EXPORT
+# ROUTES — EXPORT (PER USER)
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/export/{status_filter}")
-async def export_logs(status_filter: str):
-    """Export campaign logs as CSV. status_filter: 'all', 'sent', 'failed'."""
+async def export_logs(status_filter: str, request: Request):
+    """Export campaign logs as CSV for the current user."""
+    user = require_user(request)
     with get_db() as conn:
         if status_filter in ("sent", "failed"):
             rows = conn.execute(
-                "SELECT phone, name, message, status, error_msg, sim_used, sent_at FROM sms_logs WHERE status = ? ORDER BY id DESC",
-                (status_filter,),
+                "SELECT phone, name, message, status, error_msg, sim_used, sent_at FROM sms_logs WHERE user_id = ? AND status = ? ORDER BY id DESC",
+                (user["id"], status_filter),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT phone, name, message, status, error_msg, sim_used, sent_at FROM sms_logs ORDER BY id DESC"
+                "SELECT phone, name, message, status, error_msg, sim_used, sent_at FROM sms_logs WHERE user_id = ? ORDER BY id DESC",
+                (user["id"],),
             ).fetchall()
 
     output = io.StringIO()
@@ -1010,23 +1386,26 @@ async def export_logs(status_filter: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ROUTES — HISTORY
+# ROUTES — HISTORY (PER USER)
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/history")
-async def campaign_history():
+async def campaign_history(request: Request):
+    user = require_user(request)
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM campaigns ORDER BY created_at DESC LIMIT 20"
+            "SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at DESC LIMIT 20",
+            (user["id"],),
         ).fetchall()
     return {"campaigns": [dict(r) for r in rows]}
 
 
 @app.get("/api/history/{campaign_id}/logs")
-async def campaign_logs(campaign_id: str):
+async def campaign_logs(campaign_id: str, request: Request):
+    user = require_user(request)
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT phone, name, status, error_msg, sim_used, sent_at FROM sms_logs WHERE campaign_id = ? ORDER BY id",
-            (campaign_id,),
+            "SELECT phone, name, status, error_msg, sim_used, sent_at FROM sms_logs WHERE user_id = ? AND campaign_id = ? ORDER BY id",
+            (user["id"], campaign_id),
         ).fetchall()
     return {"logs": [dict(r) for r in rows]}
 
@@ -1038,9 +1417,10 @@ if __name__ == "__main__":
     import uvicorn
     local_ip = get_local_ip()
     print("=" * 65)
-    print(" 🚀 SMS Campaign & CRM Dashboard ishga tushirilmoqda...")
+    print(" 🚀 SMS Campaign & CRM Dashboard (Ko'p foydalanuvchili rejim)")
     print(f" 👉 Kompyuter brauzerida:      http://localhost:8000")
-    print(f" 👉 Yoki:                     http://127.0.0.1:8000")
+    print(f" 👉 Asosiy admin login:        admin")
+    print(f" 👉 Birlamchi parol:           admin123")
     print(f" 📱 Android ilova / Telefon:   http://{local_ip}:8000")
     print(" ⚠️  DIQQAT: Brauzerga '0.0.0.0:8000' deb yozmang (xatolik beradi)!")
     print("=" * 65)
