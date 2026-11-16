@@ -294,6 +294,97 @@ def clean_phone(raw: str) -> Optional[str]:
     return None
 
 
+def cell_to_str(val) -> str:
+    """Convert Excel cell value to clean string, handling float notation (.0) properly."""
+    if val is None:
+        return ""
+    if isinstance(val, float):
+        if val.is_integer():
+            return str(int(val))
+        return str(val).split(".")[0]
+    if isinstance(val, int):
+        return str(val)
+    s = str(val).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
+
+def parse_contacts_excel(content_bytes: bytes) -> list:
+    """Parse phone numbers and optional names from Excel (.xlsx) bytes."""
+    import openpyxl
+    results = []
+    seen = set()
+
+    try:
+        wb = openpyxl.load_workbook(filename=io.BytesIO(content_bytes), data_only=True, read_only=True)
+        sheet = wb.active
+        if not sheet:
+            return []
+
+        rows = list(sheet.iter_rows(values_only=True))
+        if not rows:
+            return []
+
+        # Check for header row
+        first_row = [str(c or "").strip().lower() for c in rows[0]]
+        phone_col_idx = None
+        name_col_idx = None
+
+        phone_keywords = ["phone", "telefon", "raqam", "nomer", "tel", "aloqa", "mobile", "номер", "телефон"]
+        name_keywords = ["name", "ism", "fio", "mijoz", "klient", "client", "имя", "фио"]
+
+        for idx, col_name in enumerate(first_row):
+            for kw in phone_keywords:
+                if kw in col_name and phone_col_idx is None:
+                    phone_col_idx = idx
+            for kw in name_keywords:
+                if kw in col_name and name_col_idx is None:
+                    name_col_idx = idx
+
+        start_row_idx = 1 if phone_col_idx is not None else 0
+
+        for row in rows[start_row_idx:]:
+            if not row or all(v is None or str(v).strip() == "" for v in row):
+                continue
+
+            raw_phone = ""
+            name = ""
+
+            if phone_col_idx is not None and phone_col_idx < len(row):
+                raw_phone = cell_to_str(row[phone_col_idx])
+                if name_col_idx is not None and name_col_idx < len(row):
+                    name = str(row[name_col_idx] or "").strip()
+
+            phone = clean_phone(raw_phone)
+            # If not detected via header or column index, search across row cells
+            if not phone:
+                for c_idx, cell_val in enumerate(row):
+                    cand = clean_phone(cell_to_str(cell_val))
+                    if cand:
+                        phone = cand
+                        # Check remaining cells for a name
+                        for n_idx, n_val in enumerate(row):
+                            if n_idx != c_idx and n_val:
+                                s_val = str(n_val).strip()
+                                if s_val and not re.sub(r"[^\d]", "", s_val):
+                                    name = s_val
+                                    break
+                                elif s_val and len(s_val) < 50 and not s_val.startswith("+") and not s_val.isdigit():
+                                    name = s_val
+                                    break
+                        break
+
+            if phone and phone not in seen:
+                seen.add(phone)
+                results.append((phone, name))
+
+        return results
+    except Exception as e:
+        print(f"Error parsing Excel file: {e}")
+        return []
+
+
 def parse_contacts_text(text: str) -> list:
     """Parse phone numbers (and optional names) from raw text."""
     results = []
@@ -1075,14 +1166,19 @@ async def upload_contacts(request: Request, file: UploadFile = File(...), sessio
         session_id = uuid.uuid4().hex[:12]
 
     content = await file.read()
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content.decode("latin-1")
+    filename = (file.filename or "").lower()
 
-    contacts = parse_contacts_text(text)
+    if filename.endswith(".xlsx") or filename.endswith(".xls"):
+        contacts = parse_contacts_excel(content)
+    else:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+        contacts = parse_contacts_text(text)
+
     if not contacts:
-        raise HTTPException(400, "Hech qanday to'g'ri raqam topilmadi")
+        raise HTTPException(400, "Fayldan hech qanday to'g'ri telefon raqam topilmadi! Excel (.xlsx), CSV yoki TXT formatida yuklang.")
 
     with get_db() as conn:
         conn.execute("DELETE FROM contacts WHERE user_id = ? AND session_id = ?", (user["id"], session_id))

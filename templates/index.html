@@ -360,10 +360,10 @@
                      ondragover="event.preventDefault(); this.classList.add('border-emerald-500/60')"
                      ondragleave="this.classList.remove('border-emerald-500/60')"
                      ondrop="handleFileDrop(event)">
-                    <i data-lucide="upload-cloud" class="w-8 h-8 text-gray-500 mx-auto mb-2"></i>
-                    <p class="text-sm text-gray-400">Faylni bu yerga tashlang yoki bosing</p>
-                    <p class="text-xs text-gray-600 mt-1">.txt yoki .csv (telefon yoki telefon,ism)</p>
-                    <input type="file" id="fileInput" accept=".txt,.csv" class="hidden" onchange="handleFileSelect(event)">
+                    <i data-lucide="file-spreadsheet" class="w-8 h-8 text-emerald-400/80 mx-auto mb-2"></i>
+                    <p class="text-sm text-gray-200 font-medium">Excel (.xlsx), CSV yoki TXT faylni yuklang</p>
+                    <p class="text-xs text-gray-500 mt-1">Faylni bu yerga tashlang yoki bosing (telefon yoki telefon, ism)</p>
+                    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.txt" class="hidden" onchange="handleFileSelect(event)">
                 </div>
 
                 <!-- Paste area -->
