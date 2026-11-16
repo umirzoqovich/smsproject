@@ -167,6 +167,41 @@ def init_db():
         if "device_id" not in cfg_cols:
             c.execute("ALTER TABLE config ADD COLUMN device_id TEXT DEFAULT ''")
 
+        # Migration: remove legacy single-user constraint CHECK (id = 1) from config table if present
+        c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='config'")
+        cfg_tbl = c.fetchone()
+        if cfg_tbl and "CHECK" in (cfg_tbl[0] or "").upper():
+            c.execute("PRAGMA table_info(config)")
+            existing_cols = {col[1] for col in c.fetchall()}
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS config_v2 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER DEFAULT 1,
+                    gateway_mode TEXT DEFAULT 'custom_android',
+                    gateway_url TEXT DEFAULT '',
+                    api_key TEXT DEFAULT '',
+                    device_id TEXT DEFAULT '',
+                    username TEXT DEFAULT '',
+                    password TEXT DEFAULT '',
+                    sim_slot TEXT DEFAULT '1',
+                    min_delay INTEGER DEFAULT 15,
+                    max_delay INTEGER DEFAULT 35,
+                    daily_limit INTEGER DEFAULT 500
+                )
+            """)
+            col_list = ["id", "gateway_mode", "gateway_url", "api_key", "username", "password", "sim_slot", "min_delay", "max_delay", "daily_limit"]
+            if "device_id" in existing_cols:
+                col_list.append("device_id")
+            if "user_id" in existing_cols:
+                col_list.append("user_id")
+            cols_str = ", ".join(col_list)
+            c.execute(f"INSERT OR IGNORE INTO config_v2 ({cols_str}) SELECT {cols_str} FROM config")
+            c.execute("DROP TABLE config")
+            c.execute("ALTER TABLE config_v2 RENAME TO config")
+
+        # Set default gateway_mode to custom_android for configs without custom gateway_url
+        c.execute("UPDATE config SET gateway_mode = 'custom_android' WHERE gateway_mode = 'local' AND (gateway_url IS NULL OR gateway_url = '' OR gateway_url LIKE '%192.168.1.105%')")
+
         # Seed initial admin account if users table is empty
         c.execute("SELECT COUNT(*) FROM users")
         user_count = c.fetchone()[0]
@@ -492,8 +527,8 @@ class CampaignEngine:
                 self.max_delay = row["max_delay"] or 35
                 self.daily_limit = row["daily_limit"] or 500
 
-                # Auto fallback to custom_android if local mode has no URL or if mode is empty/local
-                if self.gateway_mode == "local" and not (self.gateway_url or "").strip():
+                # Auto fallback to custom_android if mode is empty or local without custom url
+                if not self.gateway_mode or (self.gateway_mode == "local" and not (self.gateway_url or "").strip()):
                     self.gateway_mode = "custom_android"
 
     def _get_current_sim(self) -> str:
@@ -546,7 +581,7 @@ class CampaignEngine:
                 # ── Local Android SMS Gateway ──
                 url = (self.gateway_url or "").strip().rstrip("/")
                 if not url:
-                    return False, "Gateway URL kiritilmagan! Sozlamalarni tekshiring."
+                    return False, "Gateway URL kiritilmagan! Agar 'SMS Bridge Pro' ilovasini ishlatayotgan bo'lsangiz, Sozlamalardan 'Shaxsiy Android Ilova (Pull Mode)' rejimini tanlang va Saqlang."
 
                 payload = {
                     "phone": phone,
@@ -902,17 +937,31 @@ def require_admin(request: Request) -> dict:
     return user
 
 
-def resolve_user_for_device(token: Optional[str] = None) -> Optional[dict]:
+def resolve_user_for_device(token: Optional[str] = None, request: Optional[Request] = None) -> Optional[dict]:
+    cand = (token or "").strip()
+    if not cand and request:
+        cand = (
+            request.query_params.get("token")
+            or request.query_params.get("device_token")
+            or request.query_params.get("t")
+            or request.headers.get("x-device-token")
+            or ""
+        ).strip()
+        if not cand:
+            auth = request.headers.get("authorization", "")
+            if auth.startswith("Bearer "):
+                cand = auth[7:].strip()
+
     with get_db() as conn:
-        if token:
-            clean_tok = token.strip()
+        if cand:
             row = conn.execute(
                 "SELECT id, username, full_name, role, device_token FROM users WHERE (device_token = ? OR username = ?) AND is_active = 1",
-                (clean_tok, clean_tok),
+                (cand, cand),
             ).fetchone()
             if row:
                 return dict(row)
-        # Fallback to admin or first user
+
+        # Fallback to admin or first active user
         row = conn.execute("SELECT id, username, full_name, role, device_token FROM users WHERE role = 'admin' AND is_active = 1 LIMIT 1").fetchone()
         if row:
             return dict(row)
@@ -1018,37 +1067,46 @@ async def admin_create_user(data: CreateUserModel, request: Request):
     device_token = (data.device_token or "").strip() or username
     pwd_hash = hash_password(data.password)
 
-    with get_db() as conn:
-        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-        if existing:
-            raise HTTPException(400, f"'{username}' nomli login allaqachon mavjud!")
-        tok_existing = conn.execute("SELECT id FROM users WHERE device_token = ?", (device_token,)).fetchone()
-        if tok_existing:
-            device_token = f"{device_token}_{secrets.token_hex(2)}"
+    try:
+        with get_db() as conn:
+            existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+            if existing:
+                raise HTTPException(400, f"'{username}' nomli login allaqachon mavjud!")
+            tok_existing = conn.execute("SELECT id FROM users WHERE device_token = ?", (device_token,)).fetchone()
+            if tok_existing:
+                device_token = f"{device_token}_{secrets.token_hex(2)}"
 
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO users (username, password_hash, full_name, role, device_token, is_active) VALUES (?, ?, ?, ?, ?, 1)",
-            (username, pwd_hash, data.full_name or username, data.role or "user", device_token),
-        )
-        new_id = cursor.lastrowid
-        # Create default config for this user
-        conn.execute(
-            "INSERT INTO config (user_id, gateway_mode, min_delay, max_delay, daily_limit, sim_slot) VALUES (?, 'custom_android', 15, 35, 500, '1')",
-            (new_id,),
-        )
-        conn.commit()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO users (username, password_hash, full_name, role, device_token, is_active) VALUES (?, ?, ?, ?, ?, 1)",
+                (username, pwd_hash, data.full_name or username, data.role or "user", device_token),
+            )
+            new_id = cursor.lastrowid
 
-    return {
-        "ok": True,
-        "message": f"Foydalanuvchi '{username}' muvaffaqiyatli yaratildi",
-        "user": {
-            "id": new_id,
-            "username": username,
-            "full_name": data.full_name,
-            "device_token": device_token,
-        },
-    }
+            # Create default config for this user if not already present
+            cfg_exists = conn.execute("SELECT id FROM config WHERE user_id = ?", (new_id,)).fetchone()
+            if not cfg_exists:
+                conn.execute(
+                    "INSERT INTO config (user_id, gateway_mode, min_delay, max_delay, daily_limit, sim_slot) VALUES (?, 'custom_android', 15, 35, 500, '1')",
+                    (new_id,),
+                )
+            conn.commit()
+
+        return {
+            "ok": True,
+            "message": f"Foydalanuvchi '{username}' muvaffaqiyatli yaratildi",
+            "user": {
+                "id": new_id,
+                "username": username,
+                "full_name": data.full_name,
+                "device_token": device_token,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating user: {e}")
+        raise HTTPException(500, f"Foydalanuvchi yaratishda xatolik: {str(e)}")
 
 
 @app.delete("/api/admin/users/{user_id}")
@@ -1345,8 +1403,8 @@ async def test_sms(data: TestSmsModel, request: Request):
 @app.get("/api/mobile/ping")
 @app.get("/api/mobile/{token}/ping")
 @app.get("/u/{token}/api/mobile/ping")
-def mobile_ping(token: Optional[str] = None):
-    user = resolve_user_for_device(token)
+def mobile_ping(request: Request, token: Optional[str] = None):
+    user = resolve_user_for_device(token, request)
     if not user:
         return {"status": "error", "message": "Foydalanuvchi topilmadi"}
     eng = get_engine(user["id"])
@@ -1363,8 +1421,8 @@ def mobile_ping(token: Optional[str] = None):
 @app.get("/api/mobile/poll")
 @app.get("/api/mobile/{token}/poll")
 @app.get("/u/{token}/api/mobile/poll")
-def mobile_poll(token: Optional[str] = None):
-    user = resolve_user_for_device(token)
+def mobile_poll(request: Request, token: Optional[str] = None):
+    user = resolve_user_for_device(token, request)
     if not user:
         return {"has_task": False, "wait_seconds": 5, "message": "Foydalanuvchi topilmadi"}
     eng = get_engine(user["id"])
@@ -1392,9 +1450,9 @@ def mobile_poll(token: Optional[str] = None):
 @app.post("/api/mobile/report")
 @app.post("/api/mobile/{token}/report")
 @app.post("/u/{token}/api/mobile/report")
-def mobile_report(rep: MobileReportModel, token: Optional[str] = None):
+def mobile_report(rep: MobileReportModel, request: Request, token: Optional[str] = None):
     device_tok = token or getattr(rep, "device_token", None)
-    user = resolve_user_for_device(device_tok)
+    user = resolve_user_for_device(device_tok, request)
     if not user:
         return {"ok": False, "message": "Foydalanuvchi topilmadi"}
     eng = get_engine(user["id"])

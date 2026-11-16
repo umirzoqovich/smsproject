@@ -1616,7 +1616,7 @@ async function createAdminUser(e) {
     e.preventDefault();
     const btn = document.getElementById('btnAddUser');
     btn.disabled = true;
-    btn.textContent = "Saqlanmoqda...";
+    btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin inline mr-1"></i> Saqlanmoqda...`;
 
     const username = document.getElementById('newUsername').value.trim();
     const password = document.getElementById('newPassword').value;
@@ -1635,18 +1635,31 @@ async function createAdminUser(e) {
                 role: 'user'
             })
         });
-        const data = await resp.json();
+
+        let data = {};
+        const text = await resp.text();
+        try {
+            data = JSON.parse(text);
+        } catch (_) {
+            data = { detail: text.substring(0, 150) };
+        }
 
         if (resp.ok && data.ok) {
-            showToast(data.message, 'success');
+            showToast(data.message || "Foydalanuvchi yaratildi ✅", 'success');
             document.getElementById('addUserForm').reset();
             loadUsersList();
-            copyUserTelegramInvite(username, data.user.device_token, fullName || username, password);
+            try {
+                const assignedToken = (data.user && data.user.device_token) || deviceToken || username;
+                copyUserTelegramInvite(username, assignedToken, fullName || username, password);
+            } catch (clipErr) {
+                console.warn("Clipboard warning:", clipErr);
+            }
         } else {
-            showToast(data.detail || data.message || "Xatolik yuz berdi", 'error');
+            showToast(data.detail || data.message || `Xatolik yuz berdi (HTTP ${resp.status})`, 'error');
         }
     } catch (err) {
-        showToast("Server bilan bog'lanishda xatolik", 'error');
+        console.error("Create user error:", err);
+        showToast(err.message || "Server bilan bog'lanishda xatolik", 'error');
     } finally {
         btn.disabled = false;
         btn.innerHTML = `<i data-lucide="plus-circle" class="w-4 h-4"></i> Foydalanuvchini saqlash`;
@@ -1658,12 +1671,15 @@ async function deleteAdminUser(id, username) {
     if (!confirm(`'${username}' nomli foydalanuvchini o'chirmoqchimisiz?`)) return;
     try {
         const resp = await fetch(`/api/admin/users/${id}`, { method: 'DELETE' });
-        const data = await resp.json();
+        let data = {};
+        try {
+            data = await resp.json();
+        } catch (_) {}
         if (resp.ok && data.ok) {
-            showToast(data.message, 'success');
+            showToast(data.message || "Foydalanuvchi o'chirildi", 'success');
             loadUsersList();
         } else {
-            showToast(data.detail || "O'chirishda xatolik", 'error');
+            showToast(data.detail || data.message || `O'chirishda xatolik (HTTP ${resp.status})`, 'error');
         }
     } catch (e) {
         showToast("Server xatosi", 'error');
@@ -1679,17 +1695,17 @@ Siz uchun SMS tizimida shaxsiy hisob ochildi:
 👉 Login: ${username}
 ${password ? `👉 Parol: ${password}\n` : ''}
 📱 "SMS Bridge Pro" ilovangizga kiriting:
-Server URL: ${origin}/api/mobile/${deviceToken}
-(yoki Qurilma kodi: ${deviceToken})
+Server manzili: ${origin}
+Qurilma kodi (Token): ${deviceToken}
 
 Xizmatni yoqish tugmasini bosing va SMS yuborishni boshlang!`;
 
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(inviteText).then(() => {
-            showToast(`'${username}' uchun Telegram ko'rsatmasi nusxalandi!`, 'success');
+            showToast(`'${username}' uchun ma'lumotlar nusxalandi!`, 'success');
+        }).catch(() => {
+            // Silently ignore clipboard permissions failure
         });
-    } else {
-        alert(inviteText);
     }
 }
 </script>
